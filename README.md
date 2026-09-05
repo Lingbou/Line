@@ -3,6 +3,10 @@
 Line is a lightweight Linux TUI for saving SSH connections and opening them
 without repeatedly typing `user@host` or passwords.
 
+Type a connection name, username, or host to filter the list, then press Enter
+to connect. The launcher keeps destinations together in a compact table and
+switches to two-line entries in narrow terminals.
+
 ## Build and run
 
 Line requires Rust, OpenSSH, and the `ssh-keygen` command. Saved-password
@@ -43,18 +47,25 @@ matching adjacent `.pub` file or derives the public key with `ssh-keygen`.
 
 | Key | Action |
 | --- | --- |
-| `←` / `→` | Select a connection |
+| Type or paste text | Filter connections by name, username, or host |
+| `↑` / `↓` or `←` / `→` | Select a connection |
 | `Enter` | Connect |
 | `Ctrl+T` | Add a connection |
 | `Ctrl+E` | Edit the selected connection |
 | `Ctrl+D` | Delete the selected connection |
 | `Ctrl+C` | Quit |
 | `Tab` / `Shift+Tab` | Move through a form |
-| `Esc` | Cancel or close a dialog |
+| `Esc` | Clear the filter, or cancel/close a dialog |
 
-The mouse can select tabs, fields, buttons, and scroll error details. SSH owns
+The mouse can select connections, fields, buttons, and scroll error details. SSH owns
 the terminal while connected; after it exits, Line restores the TUI and keeps
 the same connection selected.
+
+The connection editor places Name / Username together and gives Host its own
+wide row alongside Port. Narrow terminals stack the identity fields, and the
+launcher wraps its action bar while keeping `Ctrl+…` shortcuts readable.
+Private/public key inputs stay together; a blank optional public key is derived
+during import.
 
 ## Source layout
 

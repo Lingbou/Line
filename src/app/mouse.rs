@@ -3,7 +3,7 @@ use super::FormField;
 /// A target rectangle used by the renderer for mouse hit testing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseTarget {
-    Tab(usize),
+    Profile(usize),
     Connect,
     Add,
     Edit,

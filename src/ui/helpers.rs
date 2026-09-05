@@ -1,12 +1,13 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, BorderType, Borders, Paragraph},
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::theme::{ACCENT, BG, DANGER, SURFACE_2, TEXT};
+use super::theme::{ACCENT, ACCENT_2, BG, BORDER, DANGER, MUTED};
 
 #[derive(Clone, Copy)]
 pub(super) enum ButtonTone {
@@ -20,9 +21,9 @@ pub(super) fn draw_button(frame: &mut Frame<'_>, rect: Rect, label: &str, tone: 
         return;
     }
     let (foreground, background, border) = match tone {
-        ButtonTone::Accent => (BG, ACCENT, ACCENT),
-        ButtonTone::Quiet => (TEXT, SURFACE_2, SURFACE_2),
-        ButtonTone::Danger => (Color::White, DANGER, DANGER),
+        ButtonTone::Accent => (ACCENT, ACCENT_2, ACCENT),
+        ButtonTone::Quiet => (MUTED, BG, BORDER),
+        ButtonTone::Danger => (DANGER, BG, DANGER),
     };
     let paragraph = Paragraph::new(truncate(
         label,
@@ -30,12 +31,13 @@ pub(super) fn draw_button(frame: &mut Frame<'_>, rect: Rect, label: &str, tone: 
             .saturating_sub(if rect.height >= 2 { 2 } else { 0 }) as usize,
     ))
     .alignment(Alignment::Center)
-    .style(
-        Style::default()
-            .fg(foreground)
-            .bg(background)
-            .add_modifier(Modifier::BOLD),
-    );
+    .style(Style::default().fg(foreground).bg(background).add_modifier(
+        if matches!(tone, ButtonTone::Quiet) {
+            Modifier::empty()
+        } else {
+            Modifier::BOLD
+        },
+    ));
     if rect.height >= 2 {
         frame.render_widget(
             paragraph.block(
@@ -56,29 +58,101 @@ pub(super) fn input_window(value: &str, cursor: usize, width: usize) -> (String,
     if width == 0 {
         return (String::new(), 0);
     }
-    let chars: Vec<char> = value.chars().collect();
-    let cursor = cursor.min(chars.len());
-    if chars.len() <= width {
+    let mut char_offset = 0;
+    let graphemes = value
+        .graphemes(true)
+        .map(|text| {
+            let start = char_offset;
+            char_offset += text.chars().count();
+            DisplayGrapheme {
+                text,
+                start,
+                end: char_offset,
+                width: UnicodeWidthStr::width(text),
+            }
+        })
+        .collect::<Vec<_>>();
+    let cursor = cursor.min(char_offset);
+    let focus = graphemes
+        .iter()
+        .position(|grapheme| cursor < grapheme.end)
+        .unwrap_or(graphemes.len());
+    // A terminal cannot place a cursor inside one displayed grapheme. If the
+    // character-indexed editor lands inside one, show it at that grapheme's
+    // leading edge without splitting the visible text.
+    let cursor = graphemes
+        .get(focus)
+        .map(|grapheme| grapheme.start)
+        .unwrap_or(char_offset);
+    let prefix_width = graphemes[..focus]
+        .iter()
+        .map(|grapheme| grapheme.width)
+        .sum::<usize>();
+    let focus_width = graphemes
+        .get(focus)
+        .map(|grapheme| grapheme.width)
+        .unwrap_or(1)
+        .max(1);
+    let focus_fits_from_start = prefix_width.saturating_add(focus_width) <= width;
+    if UnicodeWidthStr::width(value) <= width && focus_fits_from_start {
         return (value.to_owned(), cursor);
     }
-    let mut start = cursor.saturating_sub(width.saturating_sub(1));
-    if start + width < cursor + 1 {
-        start = cursor + 1 - width;
-    }
-    let end = (start + width).min(chars.len());
-    if end - start < width {
-        start = end.saturating_sub(width);
-    }
-    let mut shown: String = chars[start..end].iter().collect();
-    let mut visible_cursor = cursor.saturating_sub(start);
-    if start > 0 {
-        if shown.chars().count() >= width {
-            shown.remove(0);
+
+    let (start, show_leading_ellipsis) = if focus_fits_from_start {
+        (0, false)
+    } else {
+        let ellipsis_width = UnicodeWidthChar::width('…').unwrap_or(1);
+        let show_leading_ellipsis =
+            focus > 0 && ellipsis_width.saturating_add(focus_width) <= width;
+        let before_cursor_width =
+            width
+                .saturating_sub(focus_width)
+                .saturating_sub(if show_leading_ellipsis {
+                    ellipsis_width
+                } else {
+                    0
+                });
+        let mut start = focus;
+        let mut used = 0;
+        while start > 0 {
+            let grapheme_width = graphemes[start - 1].width;
+            if used + grapheme_width > before_cursor_width {
+                break;
+            }
+            start -= 1;
+            used += grapheme_width;
         }
-        shown.insert(0, '…');
-        visible_cursor = visible_cursor.saturating_add(1);
+        (start, show_leading_ellipsis && start > 0)
+    };
+
+    let mut shown = String::new();
+    let mut used = 0;
+    if show_leading_ellipsis {
+        shown.push('…');
+        used = UnicodeWidthChar::width('…').unwrap_or(1);
     }
-    (shown, visible_cursor.min(width))
+    for grapheme in &graphemes[start..] {
+        if used + grapheme.width > width {
+            break;
+        }
+        shown.push_str(grapheme.text);
+        used += grapheme.width;
+    }
+
+    let start_char = graphemes
+        .get(start)
+        .map(|grapheme| grapheme.start)
+        .unwrap_or(char_offset);
+    let visible_cursor = cursor.saturating_sub(start_char) + usize::from(show_leading_ellipsis);
+    (shown, visible_cursor)
+}
+
+#[derive(Clone, Copy)]
+struct DisplayGrapheme<'a> {
+    text: &'a str,
+    start: usize,
+    end: usize,
+    width: usize,
 }
 
 pub(super) fn modal_rect(area: Rect, max_width: u16, desired_height: u16) -> Rect {
@@ -121,14 +195,74 @@ pub(super) fn truncate(value: &str, max_width: usize) -> String {
     let content_width = max_width - 1;
     let mut result = String::new();
     let mut used = 0;
-    for character in value.chars() {
-        let width = character.width().unwrap_or(0);
+    for grapheme in value.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
         if used + width > content_width {
             break;
         }
-        result.push(character);
+        result.push_str(grapheme);
         used += width;
     }
     result.push('…');
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use unicode_width::UnicodeWidthStr;
+
+    use super::{input_window, truncate};
+
+    #[test]
+    fn input_window_scrolls_wide_characters_by_terminal_columns() {
+        let (shown, cursor) = input_window("服务器连接名称", 7, 6);
+
+        assert_eq!(shown, "…名称");
+        assert_eq!(UnicodeWidthStr::width(shown.as_str()), 5);
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn input_window_keeps_a_character_cursor_for_mixed_width_text() {
+        let (shown, cursor) = input_window("ab上海cdef", 5, 7);
+
+        assert_eq!(shown, "…上海cd");
+        assert_eq!(UnicodeWidthStr::width(shown.as_str()), 7);
+        assert_eq!(cursor, 4);
+        assert_eq!(shown.chars().take(cursor).collect::<String>(), "…上海c");
+    }
+
+    #[test]
+    fn input_window_reserves_a_column_for_an_end_cursor_at_exact_width() {
+        let (shown, cursor) = input_window("abcd", 4, 4);
+
+        assert_eq!(shown, "…cd");
+        assert_eq!(UnicodeWidthStr::width(shown.as_str()), 3);
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn input_window_keeps_the_wide_character_after_the_cursor_whole() {
+        let (shown, cursor) = input_window("abcde中f", 5, 6);
+
+        assert_eq!(shown, "…cde中");
+        assert_eq!(UnicodeWidthStr::width(shown.as_str()), 6);
+        assert_eq!(cursor, 4);
+        assert_eq!(shown.chars().nth(cursor), Some('中'));
+    }
+
+    #[test]
+    fn input_window_keeps_a_fitting_emoji_grapheme_visible() {
+        let value = "👩‍💻".repeat(9);
+        let (shown, cursor) = input_window(&value, value.chars().count(), 35);
+
+        assert_eq!(shown, value);
+        assert_eq!(UnicodeWidthStr::width(shown.as_str()), 18);
+        assert_eq!(cursor, shown.chars().count());
+    }
+
+    #[test]
+    fn truncation_never_splits_a_zwj_emoji_grapheme() {
+        assert_eq!(truncate("👨‍👩‍👧‍👦xyz", 3), "👨‍👩‍👧‍👦…");
+    }
 }

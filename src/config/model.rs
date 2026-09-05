@@ -12,7 +12,7 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub struct Profile {
     /// Stable identity used by the UI when a list is reordered.
     pub id: String,
-    /// Human-readable tab title. Names are unique case-insensitively.
+    /// Human-readable connection label. Names are unique case-insensitively.
     pub name: String,
     pub host: String,
     pub port: u16,

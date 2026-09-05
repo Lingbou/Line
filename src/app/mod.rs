@@ -5,6 +5,7 @@
 //! performs I/O and calls [`App::finish_save`] / [`App::finish_delete`] when
 //! an operation has completed.
 
+mod browse;
 mod form;
 mod helpers;
 mod input;

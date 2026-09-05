@@ -40,7 +40,7 @@ fn browse_shortcuts_open_forms_and_connect() {
 }
 
 #[test]
-fn unconfigured_browse_shortcuts_do_nothing() {
+fn ordinary_browse_letters_filter_instead_of_acting_as_shortcuts() {
     let mut app = App::new(vec![profile("1", "one"), profile("2", "two")]);
 
     for code in [
@@ -53,14 +53,161 @@ fn unconfigured_browse_shortcuts_do_nothing() {
             app.handle_key(key(code, KeyModifiers::NONE)),
             AppAction::None
         );
-        assert_eq!(app.selected_index(), Some(0));
         assert_eq!(app.screen(), Screen::Browse);
     }
+    assert_eq!(app.browse_query(), "");
+    assert_eq!(app.selected_index(), Some(0));
 
     assert_eq!(
         app.handle_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         AppAction::Quit
     );
+}
+
+#[test]
+fn browse_filter_matches_names_usernames_and_hosts_case_insensitively() {
+    let mut deployment = profile("2", "生产环境");
+    deployment.username = "Deploy".into();
+    deployment.host = "10.20.30.40".into();
+    let mut app = App::new(vec![profile("1", "Staging"), deployment]);
+
+    for (query, expected) in [("staG", 0), ("生产", 1), ("DEPLOY", 1), ("20.30", 1)] {
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+        app.handle_event(Event::Paste(query.into()));
+        assert_eq!(app.visible_profile_indices(), &[expected]);
+        assert_eq!(app.selected_index(), Some(expected));
+    }
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_event(Event::Paste("secret".into()));
+    assert!(app.visible_profile_indices().is_empty());
+}
+
+#[test]
+fn filtered_navigation_and_actions_use_actual_profile_indices() {
+    let mut app = App::new(vec![
+        profile("1", "dev"),
+        profile("2", "prod api"),
+        profile("3", "staging"),
+        profile("4", "prod database"),
+    ]);
+    app.handle_event(Event::Paste("prod".into()));
+    assert_eq!(app.visible_profile_indices(), &[1, 3]);
+    assert_eq!(app.selected_index(), Some(1));
+    app.handle_mouse_target(MouseTarget::Profile(0));
+    assert_eq!(app.selected_index(), Some(1));
+    app.handle_mouse_target(MouseTarget::Profile(3));
+    assert_eq!(app.selected_index(), Some(3));
+    app.handle_key(key(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.selected_index(), Some(1));
+    app.handle_key(key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.selected_index(), Some(3));
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::Connect("4".into())
+    );
+
+    app.handle_key(key(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().profile_id.as_deref(), Some("4"));
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.browse_query(), "prod");
+    assert_eq!(app.selected_index(), Some(3));
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.selected_index(), Some(1));
+    app.handle_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::Delete("2".into())
+    );
+    app.finish_delete("2");
+    assert_eq!(app.browse_query(), "prod");
+    assert_eq!(app.visible_profile_indices(), &[2]);
+    assert_eq!(app.selected_profile().unwrap().id, "4");
+}
+
+#[test]
+fn no_filter_results_disable_connection_edit_and_delete() {
+    let mut app = App::new(vec![profile("1", "one")]);
+    app.handle_event(Event::Paste("missing".into()));
+    assert!(app.visible_profile_indices().is_empty());
+    assert!(app.selected_profile().is_none());
+
+    for event in [
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        key(KeyCode::Down, KeyModifiers::NONE),
+        key(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(app.handle_key(event), AppAction::None);
+        assert_eq!(app.screen(), Screen::Browse);
+        assert_eq!(app.selected_index(), None);
+    }
+
+    for target in [MouseTarget::Connect, MouseTarget::Edit, MouseTarget::Delete] {
+        let mut regions = MouseRegions::default();
+        regions.add(0, 0, 10, 1, target);
+        app.set_mouse_regions(regions);
+        assert_eq!(
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            AppAction::None
+        );
+        assert_eq!(app.screen(), Screen::Browse);
+    }
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.visible_profile_indices(), &[0]);
+    assert_eq!(app.selected_index(), Some(0));
+}
+
+#[test]
+fn search_backspace_removes_complete_graphemes_and_escape_clears() {
+    let mut app = App::new(vec![profile("1", "生产👩‍💻")]);
+    app.handle_key(key(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert_eq!(app.browse_query(), "");
+    app.handle_key(key(KeyCode::Char('生'), KeyModifiers::NONE));
+    app.handle_event(Event::Paste("产👩‍💻\r\n".into()));
+    assert_eq!(app.browse_query(), "生产👩‍💻");
+    app.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(app.browse_query(), "生产");
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.browse_query(), "");
+    assert_eq!(app.screen(), Screen::Browse);
+}
+
+#[test]
+fn canceled_add_keeps_filter_and_successful_save_reveals_saved_profile() {
+    let mut app = App::new(vec![profile("1", "one")]);
+    app.handle_event(Event::Paste("missing".into()));
+    app.begin_add();
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.browse_query(), "missing");
+    assert!(app.selected_profile().is_none());
+
+    app.begin_add();
+    app.finish_save(profile("2", "new"));
+    assert_eq!(app.browse_query(), "");
+    assert_eq!(app.visible_profile_indices(), &[0, 1]);
+    assert_eq!(app.selected_profile().unwrap().id, "2");
+}
+
+#[test]
+fn reloading_profiles_refreshes_search_matches() {
+    let mut app = App::new(vec![profile("1", "one")]);
+    app.handle_event(Event::Paste("prod".into()));
+    app.set_profiles(vec![profile("2", "prod api"), profile("3", "dev")]);
+    assert_eq!(app.visible_profile_indices(), &[0]);
+    assert_eq!(app.selected_profile().unwrap().id, "2");
+    app.set_profiles(vec![profile("3", "dev")]);
+    assert!(app.selected_profile().is_none());
 }
 
 #[test]
@@ -141,6 +288,24 @@ fn form_submission_validates_and_emits_draft() {
     assert!(
         matches!(action, AppAction::Save(draft) if draft.username == "root" && draft.port == 2200)
     );
+}
+
+#[test]
+fn enter_saves_when_show_password_has_focus() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.name = "New".into();
+    form.host = "example.com".into();
+    form.username = "root".into();
+    form.auth = AuthDraft::Password {
+        password: "pw".into(),
+    };
+    form.field = FormField::ShowPassword;
+
+    assert!(matches!(
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::Save(_)
+    ));
 }
 
 #[test]
@@ -341,7 +506,9 @@ fn password_paste_drops_one_clipboard_line_ending_but_preserves_spaces() {
 }
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 
 use crate::config::{AuthMethod, Profile};
 

@@ -12,6 +12,8 @@ use super::{
 pub struct App {
     pub(super) profiles: Vec<Profile>,
     pub(super) selected: usize,
+    pub(super) browse_query: String,
+    pub(super) visible_profiles: Vec<usize>,
     pub(super) screen: Screen,
     pub(super) form: Option<FormState>,
     pub(super) form_conflict: bool,
@@ -19,10 +21,12 @@ pub struct App {
     pub(super) delete_key_target: Option<PathBuf>,
     pub(super) error_message: Option<String>,
     pub(super) error_scroll: u16,
+    pub(super) error_scroll_limit: u16,
     pub(super) error_return_screen: Screen,
     pub(super) status_message: Option<String>,
     pub(super) mouse_regions: MouseRegions,
     pub(super) available_keys: Vec<KeyChoice>,
+    pub(super) terminal_too_small: bool,
 }
 
 impl std::fmt::Debug for App {
@@ -43,9 +47,12 @@ impl std::fmt::Debug for App {
 impl App {
     pub fn new(profiles: Vec<Profile>) -> Self {
         let selected = 0;
+        let visible_profiles = (0..profiles.len()).collect();
         let mut app = Self {
             profiles,
             selected,
+            browse_query: String::new(),
+            visible_profiles,
             screen: Screen::Browse,
             form: None,
             form_conflict: false,
@@ -53,10 +60,12 @@ impl App {
             delete_key_target: None,
             error_message: None,
             error_scroll: 0,
+            error_scroll_limit: 0,
             error_return_screen: Screen::Browse,
             status_message: None,
             mouse_regions: MouseRegions::default(),
             available_keys: Vec::new(),
+            terminal_too_small: false,
         };
         if app.profiles.is_empty() {
             app.begin_add();
@@ -69,11 +78,9 @@ impl App {
     }
 
     pub fn selected_index(&self) -> Option<usize> {
-        if self.profiles.is_empty() {
-            None
-        } else {
-            Some(self.selected.min(self.profiles.len() - 1))
-        }
+        self.visible_profiles
+            .contains(&self.selected)
+            .then_some(self.selected)
     }
 
     pub fn selected_profile(&self) -> Option<&Profile> {
@@ -99,6 +106,15 @@ impl App {
 
     pub fn error_scroll(&self) -> u16 {
         self.error_scroll
+    }
+
+    pub fn set_error_scroll_limit(&mut self, limit: u16) {
+        self.error_scroll_limit = limit;
+        self.error_scroll = self.error_scroll.min(limit);
+    }
+
+    pub fn error_return_screen(&self) -> Screen {
+        self.error_return_screen
     }
 
     pub fn status_message(&self) -> Option<&str> {
@@ -130,6 +146,10 @@ impl App {
         self.mouse_regions = regions;
     }
 
+    pub fn set_terminal_too_small(&mut self, too_small: bool) {
+        self.terminal_too_small = too_small;
+    }
+
     pub fn set_profiles(&mut self, profiles: Vec<Profile>) {
         self.profiles = profiles;
         if let Some(form) = self.form.as_mut()
@@ -144,25 +164,27 @@ impl App {
                     AuthMethod::Key { .. } => None,
                 });
         }
-        if self.profiles.is_empty() {
-            self.selected = 0;
-        } else {
-            self.selected = self.selected.min(self.profiles.len() - 1);
-        }
+        self.refresh_browse_matches();
     }
 
     pub fn select(&mut self, index: usize) {
-        if !self.profiles.is_empty() {
-            self.selected = index.min(self.profiles.len() - 1);
+        if self.visible_profiles.contains(&index) {
+            self.selected = index;
         }
     }
 
     pub fn move_selection(&mut self, delta: i32) {
-        if self.profiles.is_empty() {
+        if self.visible_profiles.is_empty() {
             return;
         }
-        self.selected =
-            (self.selected as i32 + delta).rem_euclid(self.profiles.len() as i32) as usize;
+        let current = self
+            .visible_profiles
+            .iter()
+            .position(|&index| index == self.selected)
+            .unwrap_or(0);
+        let next = (current as i64 + i64::from(delta))
+            .rem_euclid(self.visible_profiles.len() as i64) as usize;
+        self.selected = self.visible_profiles[next];
     }
 
     pub fn begin_add(&mut self) {
@@ -202,6 +224,8 @@ impl App {
             self.profiles.push(profile);
             self.selected = self.profiles.len() - 1;
         }
+        self.browse_query.clear();
+        self.refresh_browse_matches();
         self.form = None;
         self.form_conflict = false;
         self.screen = Screen::Browse;
@@ -213,12 +237,9 @@ impl App {
     pub fn finish_delete(&mut self, id: &str) {
         if let Some(index) = self.profiles.iter().position(|item| item.id == id) {
             self.profiles.remove(index);
-            if self.profiles.is_empty() {
-                self.selected = 0;
-            } else {
-                self.selected = self.selected.min(self.profiles.len() - 1);
-            }
+            self.selected = self.selected.min(self.profiles.len().saturating_sub(1));
         }
+        self.refresh_browse_matches();
         self.delete_target = None;
         self.form_conflict = false;
         self.screen = Screen::Browse;
@@ -275,6 +296,7 @@ impl App {
             }
         }
         self.error_scroll = 0;
+        self.error_scroll_limit = 0;
         self.error_message = Some(message);
         self.screen = Screen::Error;
     }

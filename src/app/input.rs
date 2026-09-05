@@ -12,7 +12,8 @@ impl App {
         match event {
             Event::Key(key) => self.handle_key(key),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
-            Event::Paste(text) => self.handle_paste(&text),
+            Event::Paste(text) if !self.terminal_too_small => self.handle_paste(&text),
+            Event::Paste(_) => AppAction::None,
             _ => AppAction::None,
         }
     }
@@ -20,6 +21,13 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> AppAction {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return AppAction::Quit;
+        }
+
+        // If the active controls are not visible, Enter must not connect,
+        // save, or confirm deletion. Escape remains available so the user can
+        // back out of the hidden screen.
+        if self.terminal_too_small && key.code != KeyCode::Esc {
+            return AppAction::None;
         }
 
         match self.screen {
@@ -60,6 +68,17 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.begin_delete();
+            }
+            KeyCode::Backspace => self.backspace_browse_query(),
+            KeyCode::Esc => self.clear_browse_query(),
+            KeyCode::Char('/') if self.browse_query.is_empty() => {}
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !character.is_control() =>
+            {
+                self.append_browse_query(character.encode_utf8(&mut [0; 4]));
             }
             _ => {}
         }
@@ -173,7 +192,7 @@ impl App {
                 _ => {}
             },
             Some(FormField::ShowPassword) => match key.code {
-                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
+                KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
                     if let Some(form) = self.form.as_mut() {
                         form.show_password = !form.show_password;
                     }
@@ -287,6 +306,10 @@ impl App {
     }
 
     fn handle_paste(&mut self, text: &str) -> AppAction {
+        if self.screen == Screen::Browse {
+            self.append_browse_query(text);
+            return AppAction::None;
+        }
         if self.screen != Screen::Form {
             return AppAction::None;
         }
@@ -529,24 +552,18 @@ impl App {
     fn dismiss_error(&mut self) {
         self.error_message = None;
         self.error_scroll = 0;
+        self.error_scroll_limit = 0;
         self.screen = self.error_return_screen;
     }
 
     fn error_scroll_limit(&self) -> u16 {
-        self.error_message
-            .as_deref()
-            .map(|message| {
-                message
-                    .lines()
-                    .map(|line| line.chars().count().max(1).div_ceil(60))
-                    .sum::<usize>()
-                    .saturating_sub(8)
-                    .min(u16::MAX as usize) as u16
-            })
-            .unwrap_or(0)
+        self.error_scroll_limit
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> AppAction {
+        if self.terminal_too_small {
+            return AppAction::None;
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(target) = self.mouse_regions.target_at(mouse.column, mouse.row) {
@@ -576,9 +593,12 @@ impl App {
     }
 
     pub fn handle_mouse_target(&mut self, target: MouseTarget) -> AppAction {
+        if self.terminal_too_small {
+            return AppAction::None;
+        }
         match self.screen {
             Screen::Browse => match target {
-                MouseTarget::Tab(index) => self.select(index),
+                MouseTarget::Profile(index) => self.select(index),
                 MouseTarget::Connect => return self.connect_selected(),
                 MouseTarget::Add => self.begin_add(),
                 MouseTarget::Edit => {
