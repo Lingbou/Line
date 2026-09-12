@@ -112,6 +112,45 @@ fn layout_regression_mixed_width_names_do_not_move_destination_or_auth_columns()
 }
 
 #[test]
+fn layout_regression_long_names_render_fully_and_auth_is_adjacent() {
+    for (width, height) in [(100, 32), (120, 34)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let long_name = "production-cluster-node-ap-east-01";
+        let mut p = profile(long_name);
+        p.host = "198.51.100.76".into();
+        p.port = 2222;
+        let mut app = App::new(vec![p]);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text = rendered_text(&terminal);
+        assert!(
+            text.contains(long_name),
+            "{width}x{height} should show the full connection name without truncation"
+        );
+        let (name_x, name_y) = rendered_position(&terminal, long_name).unwrap();
+        let (auth_x, auth_y) = rendered_position(&terminal, "KEY").unwrap();
+        let (dest_x, dest_y) = rendered_position(&terminal, "root@198.51.100.76:2222").unwrap();
+        assert_eq!(name_y, auth_y);
+        assert_eq!(auth_y, dest_y);
+        assert!(
+            auth_x > name_x,
+            "auth column must follow the connection name"
+        );
+        assert!(
+            dest_x > auth_x,
+            "destination column must follow auth column"
+        );
+        assert!(
+            auth_x.saturating_sub(name_x) <= 45,
+            "name to auth distance should remain tightly proportioned"
+        );
+        assert!(
+            dest_x.saturating_sub(auth_x) <= 8,
+            "destination should immediately follow auth without a giant gap"
+        );
+    }
+}
+
+#[test]
 fn layout_regression_host_uses_available_width_and_labels_share_a_grid() {
     for (width, height) in [(80, 24), (120, 34)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

@@ -71,9 +71,16 @@ pub(super) fn draw_connection_list(
     };
     draw_text(frame, columns.name, area.y, &heading, MUTED, false);
     if let Some(endpoint) = columns.endpoint {
+        draw_text(frame, columns.auth, area.y, "AUTH", MUTED, false);
         draw_text(frame, endpoint, area.y, "DESTINATION", MUTED, false);
+    } else {
+        frame.render_widget(
+            Paragraph::new("AUTH")
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(MUTED)),
+            Rect::new(columns.auth.x, area.y, columns.auth.width, 1),
+        );
     }
-    draw_text(frame, columns.auth, area.y, "AUTH", MUTED, false);
     for (row, &index) in indices[start..end].iter().enumerate() {
         let y = area.y + heading_height + row as u16 * row_height;
         let rect = Rect::new(area.x, y, area.width, row_height);
@@ -147,14 +154,25 @@ fn draw_row(frame: &mut Frame<'_>, area: Rect, profile: &Profile, selected: bool
         AuthMethod::Password { .. } => "PWD",
         AuthMethod::Key { .. } => "KEY",
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
+    if columns.endpoint.is_some() {
+        draw_text(
+            frame,
+            columns.auth,
+            area.y,
             auth,
-            Style::default().fg(if selected { ACCENT } else { MUTED }),
-        )]))
-        .alignment(Alignment::Right),
-        Rect::new(columns.auth.x, area.y, columns.auth.width, 1),
-    );
+            if selected { ACCENT } else { MUTED },
+            selected,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                auth,
+                Style::default().fg(if selected { ACCENT } else { MUTED }),
+            )]))
+            .alignment(Alignment::Right),
+            Rect::new(columns.auth.x, area.y, columns.auth.width, 1),
+        );
+    }
 }
 
 pub(super) fn endpoint(profile: &Profile) -> String {
@@ -167,26 +185,34 @@ pub(super) fn endpoint(profile: &Profile) -> String {
 
 struct Columns {
     name: Rect,
-    endpoint: Option<Rect>,
     auth: Rect,
+    endpoint: Option<Rect>,
 }
 
 impl Columns {
     fn new(area: Rect) -> Self {
-        let auth = Rect::new(area.right() - 5, area.y, 4, 1);
-        let content_width = area.width.saturating_sub(9);
-        let name_width = if area.width >= 66 {
-            (content_width / 4).clamp(16, 24)
+        if area.width >= 66 {
+            let available = area.width.saturating_sub(10);
+            let name_width = ((available as u32 * 42) / 100).clamp(26, 40) as u16;
+            let name = Rect::new(area.x + 2, area.y, name_width, 1);
+            let auth = Rect::new(name.right() + 2, area.y, 4, 1);
+            let endpoint_x = auth.right() + 2;
+            let endpoint_width = area.right().saturating_sub(endpoint_x + 1);
+            let endpoint = Some(Rect::new(endpoint_x, area.y, endpoint_width, 1));
+            Self {
+                name,
+                auth,
+                endpoint,
+            }
         } else {
-            content_width
-        };
-        let name = Rect::new(area.x + 2, area.y, name_width, 1);
-        let endpoint = (area.width >= 66)
-            .then(|| Rect::new(name.right() + 2, area.y, auth.x - name.right() - 4, 1));
-        Self {
-            name,
-            endpoint,
-            auth,
+            let auth = Rect::new(area.right().saturating_sub(5), area.y, 4, 1);
+            let name_width = auth.x.saturating_sub(area.x + 3);
+            let name = Rect::new(area.x + 2, area.y, name_width, 1);
+            Self {
+                name,
+                auth,
+                endpoint: None,
+            }
         }
     }
 }

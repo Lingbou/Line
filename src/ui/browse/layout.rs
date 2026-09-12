@@ -18,7 +18,7 @@ pub(super) struct BrowseLayout {
 impl BrowseLayout {
     pub(super) fn resolve(area: Rect, count: usize) -> Self {
         let margin = if area.width >= 80 { 4 } else { 0 };
-        let width = area.width.saturating_sub(margin).min(120);
+        let width = area.width.saturating_sub(margin).min(104);
         let narrow = width.saturating_sub(4) < 66;
         let row_height = if narrow { 2 } else { 1 };
         let chrome_height = if narrow { 11 } else { 13 };
