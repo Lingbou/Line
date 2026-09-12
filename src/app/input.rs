@@ -4,7 +4,10 @@ use crossterm::event::{
 
 use super::{
     App, AppAction, AuthDraft, FormField, KeySource, MouseTarget, Screen,
-    helpers::{insert_char, insert_str, path_to_string, remove_char},
+    helpers::{
+        insert_char, insert_str, next_word_boundary, path_to_string, prev_word_boundary,
+        remove_char, remove_char_range,
+    },
 };
 
 impl App {
@@ -55,10 +58,20 @@ impl App {
 
     fn handle_browse_key(&mut self, key: KeyEvent) -> AppAction {
         match key.code {
-            KeyCode::Left => self.move_selection(-1),
-            KeyCode::Right => self.move_selection(1),
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
+            KeyCode::Left | KeyCode::Up => self.move_selection(-1),
+            KeyCode::Right | KeyCode::Down => self.move_selection(1),
+            KeyCode::PageUp => self.move_selection(-5),
+            KeyCode::PageDown => self.move_selection(5),
+            KeyCode::Home => {
+                if let Some(&first) = self.visible_profiles.first() {
+                    self.select(first);
+                }
+            }
+            KeyCode::End => {
+                if let Some(&last) = self.visible_profiles.last() {
+                    self.select(last);
+                }
+            }
             KeyCode::Enter => return self.connect_selected(),
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.begin_add();
@@ -69,7 +82,20 @@ impl App {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.begin_delete();
             }
+            KeyCode::Backspace
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.backspace_word_browse_query();
+            }
             KeyCode::Backspace => self.backspace_browse_query(),
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.backspace_word_browse_query();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.clear_browse_query();
+            }
             KeyCode::Esc => self.clear_browse_query(),
             KeyCode::Char('/') if self.browse_query.is_empty() => {}
             KeyCode::Char(character)
@@ -131,12 +157,7 @@ impl App {
                 }
             });
             if let Some(value) = import_path {
-                if value.trim().is_empty()
-                    && self
-                        .form
-                        .as_ref()
-                        .is_some_and(|form| form.field == FormField::PublicKey)
-                {
+                if value.trim().is_empty() {
                     self.form_next(false);
                     return AppAction::None;
                 }
@@ -236,13 +257,87 @@ impl App {
     }
 
     fn handle_text_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('a') if ctrl => {
                 if let Some(form) = self.form.as_mut() {
+                    form.cursor = 0;
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Char('e') if ctrl => {
+                if let Some(form) = self.form.as_mut() {
+                    form.cursor = form
+                        .current_text()
+                        .map(|text| text.chars().count())
+                        .unwrap_or(0);
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(form) = self.form.as_mut() {
+                    let cursor = form.cursor;
+                    if cursor > 0
+                        && let Some(text) = form.current_text_mut()
+                    {
+                        remove_char_range(text, 0, cursor);
+                        form.cursor = 0;
+                        form.validation_error = None;
+                    }
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Char('k') if ctrl => {
+                if let Some(form) = self.form.as_mut() {
+                    let cursor = form.cursor;
+                    if let Some(text) = form.current_text_mut() {
+                        let len = text.chars().count();
+                        if cursor < len {
+                            remove_char_range(text, cursor, len);
+                            form.validation_error = None;
+                        }
+                    }
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Char('w') if ctrl => {
+                if let Some(form) = self.form.as_mut() {
+                    let cursor = form.cursor;
+                    if cursor > 0
+                        && let Some(text) = form.current_text_mut()
+                    {
+                        let target = prev_word_boundary(text, cursor);
+                        remove_char_range(text, target, cursor);
+                        form.cursor = target;
+                        form.validation_error = None;
+                    }
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(form) = self.form.as_mut() {
+                    if form.field == FormField::Port && !c.is_ascii_digit() {
+                        return Some(AppAction::None);
+                    }
                     let cursor = form.cursor;
                     if let Some(text) = form.current_text_mut() {
                         insert_char(text, cursor, c);
                         form.cursor = cursor + 1;
+                        form.validation_error = None;
+                    }
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Backspace if ctrl || alt => {
+                if let Some(form) = self.form.as_mut() {
+                    let cursor = form.cursor;
+                    if cursor > 0
+                        && let Some(text) = form.current_text_mut()
+                    {
+                        let target = prev_word_boundary(text, cursor);
+                        remove_char_range(text, target, cursor);
+                        form.cursor = target;
                         form.validation_error = None;
                     }
                 }
@@ -260,6 +355,17 @@ impl App {
                 }
                 Some(AppAction::None)
             }
+            KeyCode::Delete if ctrl || alt => {
+                if let Some(form) = self.form.as_mut() {
+                    let cursor = form.cursor;
+                    if let Some(text) = form.current_text_mut() {
+                        let target = next_word_boundary(text, cursor);
+                        remove_char_range(text, cursor, target);
+                        form.validation_error = None;
+                    }
+                }
+                Some(AppAction::None)
+            }
             KeyCode::Delete => {
                 if let Some(form) = self.form.as_mut() {
                     let cursor = form.cursor;
@@ -269,9 +375,27 @@ impl App {
                 }
                 Some(AppAction::None)
             }
+            KeyCode::Left if ctrl || alt => {
+                if let Some(form) = self.form.as_mut() {
+                    let cursor = form.cursor;
+                    if let Some(text) = form.current_text() {
+                        form.cursor = prev_word_boundary(text, cursor);
+                    }
+                }
+                Some(AppAction::None)
+            }
             KeyCode::Left => {
                 if let Some(form) = self.form.as_mut() {
                     form.cursor = form.cursor.saturating_sub(1);
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Right if ctrl || alt => {
+                if let Some(form) = self.form.as_mut() {
+                    let cursor = form.cursor;
+                    if let Some(text) = form.current_text() {
+                        form.cursor = next_word_boundary(text, cursor);
+                    }
                 }
                 Some(AppAction::None)
             }

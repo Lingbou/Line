@@ -1,3 +1,13 @@
+use std::path::{Path, PathBuf};
+
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+
+use crate::config::{AuthMethod, Profile};
+
+use super::*;
+
 fn profile(id: &str, name: &str) -> Profile {
     Profile {
         id: id.into(),
@@ -504,12 +514,210 @@ fn password_paste_drops_one_clipboard_line_ending_but_preserves_spaces() {
         AuthDraft::Password { password } if password == "  secret value  "
     ));
 }
-use std::path::{Path, PathBuf};
 
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+#[test]
+fn ctrl_left_and_right_jump_words_in_form_fields() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.host = "prod-api-01.us-west.example.com".into();
+    form.field = FormField::Host;
+    form.cursor = form.host.chars().count();
 
-use crate::config::{AuthMethod, Profile};
+    // Word boundaries stepping backward
+    app.handle_key(key(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 28); // before "com"
+    app.handle_key(key(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 20); // before "example"
+    app.handle_key(key(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 15); // before "west"
+    app.handle_key(key(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 12); // before "us"
+    app.handle_key(key(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 9); // before "01"
+    app.handle_key(key(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 5); // before "api"
+    app.handle_key(key(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 0); // before "prod"
 
-use super::*;
+    // Stepping forward
+    app.handle_key(key(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 5);
+    app.handle_key(key(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 9);
+}
+
+#[test]
+fn ctrl_w_and_ctrl_backspace_delete_words() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.name = "HongKong_BestAPI-4c4g-Jinyeyun-R".into();
+    form.field = FormField::Name;
+    form.cursor = form.name.chars().count();
+
+    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().name, "HongKong_BestAPI-4c4g-Jinyeyun-");
+
+    app.handle_key(key(KeyCode::Backspace, KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().name, "HongKong_BestAPI-4c4g-");
+}
+
+#[test]
+fn ctrl_a_and_ctrl_e_jump_to_line_boundaries() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.host = "192.168.1.100".into();
+    form.field = FormField::Host;
+    form.cursor = 5;
+
+    app.handle_key(key(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 0);
+
+    app.handle_key(key(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().cursor, 13);
+}
+
+#[test]
+fn ctrl_u_and_ctrl_k_clear_line_segments() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.host = "prefix-target-suffix".into();
+    form.field = FormField::Host;
+    form.cursor = 13; // after "target"
+
+    app.handle_key(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().host, "prefix-target");
+
+    app.handle_key(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().host, "");
+    assert_eq!(app.form().unwrap().cursor, 0);
+}
+
+#[test]
+fn new_connection_defaults_to_root_and_can_save_with_only_host() {
+    let mut app = App::new(Vec::new());
+    assert_eq!(app.form().unwrap().username, "root");
+    assert_eq!(app.form().unwrap().port, "22");
+
+    let form = app.form_mut().unwrap();
+    form.host = "1.2.3.4".into();
+    form.auth = AuthDraft::Password {
+        password: "secret".into(),
+    };
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        action,
+        AppAction::Save(ProfileDraft {
+            username,
+            port,
+            host,
+            ..
+        }) if username == "root" && port == 22 && host == "1.2.3.4"
+    ));
+}
+
+#[test]
+fn empty_username_and_port_default_to_root_and_22() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.username.clear();
+    form.port.clear();
+    form.host = "1.2.3.4".into();
+    form.auth = AuthDraft::Password {
+        password: "secret".into(),
+    };
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        action,
+        AppAction::Save(ProfileDraft {
+            username,
+            port,
+            host,
+            ..
+        }) if username == "root" && port == 22 && host == "1.2.3.4"
+    ));
+}
+
+#[test]
+fn endpoint_shorthand_parses_ssh_and_port_flags() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.host = "ssh -p 2222 deploy@10.0.0.1".into();
+    form.auth = AuthDraft::Password {
+        password: "secret".into(),
+    };
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        action,
+        AppAction::Save(ProfileDraft {
+            username,
+            port,
+            host,
+            ..
+        }) if username == "deploy" && port == 2222 && host == "10.0.0.1"
+    ));
+}
+
+#[test]
+fn empty_import_path_tab_advances_without_error() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.auth = AuthDraft::Key {
+        source: KeySource::Import,
+        value: String::new(),
+        public_key: None,
+    };
+    form.field = FormField::KeyValue;
+
+    let action = app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(action, AppAction::None);
+    assert_eq!(app.form().unwrap().field, FormField::PublicKey);
+    assert_eq!(app.form().unwrap().validation_error, None);
+}
+
+#[test]
+fn port_field_ignores_non_digit_characters() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.port.clear();
+    form.field = FormField::Port;
+    form.cursor = 0;
+
+    app.handle_key(key(KeyCode::Char('a'), KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char('8'), KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char('b'), KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char('0'), KeyModifiers::NONE));
+
+    assert_eq!(app.form().unwrap().port, "80");
+}
+
+#[test]
+fn browse_navigation_supports_page_up_down_home_end_and_query_editing() {
+    let profiles: Vec<_> = (0..20)
+        .map(|i| profile(&i.to_string(), &format!("Server {i:02}")))
+        .collect();
+    let mut app = App::new(profiles);
+
+    app.handle_key(key(KeyCode::End, KeyModifiers::NONE));
+    assert_eq!(app.selected_index(), Some(19));
+
+    app.handle_key(key(KeyCode::Home, KeyModifiers::NONE));
+    assert_eq!(app.selected_index(), Some(0));
+
+    app.handle_key(key(KeyCode::PageDown, KeyModifiers::NONE));
+    assert_eq!(app.selected_index(), Some(5));
+
+    app.handle_key(key(KeyCode::PageUp, KeyModifiers::NONE));
+    assert_eq!(app.selected_index(), Some(0));
+
+    app.handle_event(Event::Paste("my-test-query".into()));
+    assert_eq!(app.browse_query(), "my-test-query");
+
+    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::CONTROL));
+    assert_eq!(app.browse_query(), "my-test-");
+
+    app.handle_key(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.browse_query(), "");
+}

@@ -70,7 +70,7 @@ impl FormState {
             name: default_name,
             host: String::new(),
             port: DEFAULT_PORT.to_string(),
-            username: String::new(),
+            username: "root".to_owned(),
             auth: AuthDraft::Password {
                 password: String::new(),
             },
@@ -235,11 +235,14 @@ impl FormState {
         // Permit the familiar `user@host:port` shorthand when a dedicated
         // field was left blank. Bracketed IPv6 is handled as well.
         parse_endpoint_shorthand(&mut host, &mut username, &mut port_text);
+        if username.is_empty() {
+            username = "root".to_owned();
+        }
+        if port_text.is_empty() {
+            port_text = DEFAULT_PORT.to_string();
+        }
         if host.is_empty() {
             return Err("Host cannot be empty".into());
-        }
-        if username.is_empty() {
-            return Err("Username cannot be empty".into());
         }
         let port: u16 = port_text
             .parse()

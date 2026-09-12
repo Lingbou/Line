@@ -169,6 +169,9 @@ impl App {
 
     pub fn select(&mut self, index: usize) {
         if self.visible_profiles.contains(&index) {
+            if self.selected != index {
+                self.status_message = None;
+            }
             self.selected = index;
         }
     }
@@ -177,6 +180,7 @@ impl App {
         if self.visible_profiles.is_empty() {
             return;
         }
+        self.status_message = None;
         let current = self
             .visible_profiles
             .iter()

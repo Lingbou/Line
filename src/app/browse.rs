@@ -1,6 +1,6 @@
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::App;
+use super::{App, helpers::prev_word_boundary};
 
 impl App {
     /// Live search text entered on the connection launcher.
@@ -26,6 +26,22 @@ impl App {
             self.browse_query.truncate(start);
             self.refresh_browse_matches();
         }
+    }
+
+    pub(super) fn backspace_word_browse_query(&mut self) {
+        if self.browse_query.is_empty() {
+            return;
+        }
+        let len = self.browse_query.chars().count();
+        let target = prev_word_boundary(&self.browse_query, len);
+        let byte_index = self
+            .browse_query
+            .char_indices()
+            .nth(target)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.browse_query.truncate(byte_index);
+        self.refresh_browse_matches();
     }
 
     pub(super) fn clear_browse_query(&mut self) {
