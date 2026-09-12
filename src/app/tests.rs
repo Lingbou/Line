@@ -554,11 +554,21 @@ fn ctrl_w_and_ctrl_backspace_delete_words() {
     form.field = FormField::Name;
     form.cursor = form.name.chars().count();
 
+    // Ctrl+W deletes previous word
     app.handle_key(key(KeyCode::Char('w'), KeyModifiers::CONTROL));
     assert_eq!(app.form().unwrap().name, "HongKong_BestAPI-4c4g-Jinyeyun-");
 
+    // Standard Ctrl+Backspace (sent as KeyCode::Backspace with CONTROL modifier)
     app.handle_key(key(KeyCode::Backspace, KeyModifiers::CONTROL));
     assert_eq!(app.form().unwrap().name, "HongKong_BestAPI-4c4g-");
+
+    // Terminal-emitted Ctrl+Backspace (sent as 0x08, parsed as Char('h') with CONTROL modifier in Konsole/xterm)
+    app.handle_key(key(KeyCode::Char('h'), KeyModifiers::CONTROL));
+    assert_eq!(app.form().unwrap().name, "HongKong_BestAPI-");
+
+    // Alt+Backspace
+    app.handle_key(key(KeyCode::Backspace, KeyModifiers::ALT));
+    assert_eq!(app.form().unwrap().name, "");
 }
 
 #[test]

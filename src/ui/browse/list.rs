@@ -183,6 +183,18 @@ pub(super) fn endpoint(profile: &Profile) -> String {
     }
 }
 
+/// Calculated geometry for tabular connection row items.
+///
+/// In wide terminals (`width >= 66`), rows are drawn in a single line using a
+/// 3-column layout: `CONNECTION` -> `AUTH` -> `DESTINATION`.
+///
+/// Placing the short, fixed-width `AUTH` tag (`KEY` / `PWD`) immediately after
+/// the connection name allows the variable-length `DESTINATION` (`user@host:port`)
+/// to stretch naturally to the right without leaving a wide visual void.
+///
+/// In narrow terminals (`width < 66`), `endpoint` is `None` and each entry takes
+/// two visual rows: row 1 displays the name and right-aligned auth tag, and row 2
+/// displays the destination address.
 struct Columns {
     name: Rect,
     auth: Rect,
@@ -190,6 +202,11 @@ struct Columns {
 }
 
 impl Columns {
+    /// Compute column boundaries for a given list row rectangle.
+    ///
+    /// The name column is dynamically scaled (42% of available width, clamped
+    /// between 26 and 40 columns) so long hostnames and CJK identifiers remain
+    /// readable without crowding out the destination address.
     fn new(area: Rect) -> Self {
         if area.width >= 66 {
             let available = area.width.saturating_sub(10);

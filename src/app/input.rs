@@ -90,7 +90,7 @@ impl App {
                 self.backspace_word_browse_query();
             }
             KeyCode::Backspace => self.backspace_browse_query(),
-            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('w' | 'h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.backspace_word_browse_query();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -301,17 +301,18 @@ impl App {
                 }
                 Some(AppAction::None)
             }
-            KeyCode::Char('w') if ctrl => {
+            // Handle both Ctrl+W and Ctrl+Backspace.
+            // On standard Unix terminals (Konsole, xterm, gnome-terminal), Ctrl+Backspace
+            // transmits ASCII 0x08 (^H), which crossterm decodes as Char('h') with CONTROL.
+            KeyCode::Char('w' | 'h') if ctrl => {
                 if let Some(form) = self.form.as_mut() {
-                    let cursor = form.cursor;
-                    if cursor > 0
-                        && let Some(text) = form.current_text_mut()
-                    {
-                        let target = prev_word_boundary(text, cursor);
-                        remove_char_range(text, target, cursor);
-                        form.cursor = target;
-                        form.validation_error = None;
-                    }
+                    form.delete_prev_word();
+                }
+                Some(AppAction::None)
+            }
+            KeyCode::Char('d') if alt => {
+                if let Some(form) = self.form.as_mut() {
+                    form.delete_next_word();
                 }
                 Some(AppAction::None)
             }
@@ -331,15 +332,7 @@ impl App {
             }
             KeyCode::Backspace if ctrl || alt => {
                 if let Some(form) = self.form.as_mut() {
-                    let cursor = form.cursor;
-                    if cursor > 0
-                        && let Some(text) = form.current_text_mut()
-                    {
-                        let target = prev_word_boundary(text, cursor);
-                        remove_char_range(text, target, cursor);
-                        form.cursor = target;
-                        form.validation_error = None;
-                    }
+                    form.delete_prev_word();
                 }
                 Some(AppAction::None)
             }
@@ -357,12 +350,7 @@ impl App {
             }
             KeyCode::Delete if ctrl || alt => {
                 if let Some(form) = self.form.as_mut() {
-                    let cursor = form.cursor;
-                    if let Some(text) = form.current_text_mut() {
-                        let target = next_word_boundary(text, cursor);
-                        remove_char_range(text, cursor, target);
-                        form.validation_error = None;
-                    }
+                    form.delete_next_word();
                 }
                 Some(AppAction::None)
             }

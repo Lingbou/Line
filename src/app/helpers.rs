@@ -8,10 +8,16 @@ pub(super) fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Check whether a character belongs to a word token (alphanumeric or underscore).
 pub(super) fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Calculate the character index of the preceding word start boundary.
+///
+/// Skips any trailing non-word delimiters to the left of `char_cursor`, and then
+/// skips contiguous word characters to land at the first character of the word.
+/// Returns 0 when moving past the start of the string.
 pub(super) fn prev_word_boundary(text: &str, char_cursor: usize) -> usize {
     if char_cursor == 0 {
         return 0;
@@ -27,6 +33,10 @@ pub(super) fn prev_word_boundary(text: &str, char_cursor: usize) -> usize {
     i
 }
 
+/// Calculate the character index of the subsequent word boundary.
+///
+/// Skips word characters to the right of `char_cursor`, then skips following
+/// delimiters to land at the start of the next token or the end of the string.
 pub(super) fn next_word_boundary(text: &str, char_cursor: usize) -> usize {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
@@ -101,6 +111,13 @@ pub(super) fn next_default_name(profiles: &[Profile]) -> String {
         .expect("an unused numeric default connection name always exists")
 }
 
+/// Parse convenient SSH invocation and endpoint shorthands pasted into the Host field.
+///
+/// Automatically handles:
+/// - Leading `ssh ` commands (e.g. `ssh -p 2222 root@192.0.2.1` -> host `192.0.2.1`, user `root`, port `2222`)
+/// - Port flags: `-p <port>` or `-p<port>`
+/// - Standard `user@host` and `user@host:port`
+/// - Bracketed IPv6 literals: `[2001:db8::1]:2222`
 pub(super) fn parse_endpoint_shorthand(
     host: &mut String,
     username: &mut String,

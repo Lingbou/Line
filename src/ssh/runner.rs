@@ -119,7 +119,23 @@ impl SshRunner {
             }
         }
 
-        let mut child = command.spawn().map_err(SshError::Spawn)?;
+        let mut child = {
+            let mut attempts = 0;
+            loop {
+                match command.spawn() {
+                    Ok(child) => break child,
+                    Err(err)
+                        if attempts < 10
+                            && (err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                                || err.raw_os_error() == Some(26)) =>
+                    {
+                        attempts += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(err) => return Err(SshError::Spawn(err)),
+                }
+            }
+        };
         let stderr = child
             .stderr
             .take()
@@ -207,7 +223,7 @@ impl SshRunner {
                     .env_remove("SSH_ASKPASS");
             }
             AuthMethod::Password { password } => {
-                let token = Uuid::new_v4().to_string();
+                let token = Uuid::new_v4().simple().to_string();
                 let password_var = format!("{PASSWORD_PREFIX}{token}");
 
                 command
@@ -296,7 +312,6 @@ mod tests {
 
     use crate::config::AuthMethod;
 
-    use super::super::askpass::PASSWORD_PREFIX;
     use super::super::test_support::{fake_ssh, profile};
     use super::super::{STDERR_TAIL_LIMIT, SshError};
     use super::*;
@@ -462,11 +477,11 @@ mod tests {
             r#"
             {
                 printf '%s\n' "$@" > "$RECORD"
-                {
-                    printf 'ASKPASS=%s\n' "$SSH_ASKPASS"
-                    printf 'ASKPASS_REQUIRE=%s\n' "$SSH_ASKPASS_REQUIRE"
-                    env | grep '^LINE_INTERNAL_ASKPASS' || true
-                } >> "$RECORD"
+                printf 'ASKPASS=%s\n' "$SSH_ASKPASS" >> "$RECORD"
+                printf 'ASKPASS_REQUIRE=%s\n' "$SSH_ASKPASS_REQUIRE" >> "$RECORD"
+                printf 'TOKEN=%s\n' "$LINE_INTERNAL_ASKPASS" >> "$RECORD"
+                eval "pass=\${LINE_INTERNAL_ASKPASS_PASSWORD_$LINE_INTERNAL_ASKPASS}"
+                printf 'PASS=%s\n' "$pass" >> "$RECORD"
                 exit 0
             }
             "#,
@@ -481,21 +496,25 @@ mod tests {
             .expect("ssh invocation");
 
         assert!(result.success());
-        let record = fs::read_to_string(record).expect("recorded invocation");
-        let (arg_text, env_text) = record.split_once("ASKPASS=").expect("askpass marker");
+        let record_content = fs::read_to_string(&record).expect("recorded invocation");
+        let (arg_text, env_text) = record_content
+            .split_once("ASKPASS=")
+            .expect("askpass marker");
         assert!(!arg_text.contains(secret));
         assert!(env_text.contains("ASKPASS_REQUIRE=force"));
         assert!(env_text.contains("/tmp/line-test-binary"));
-        let password_line = env_text
+
+        let token = env_text
             .lines()
-            .find(|line| line.starts_with(PASSWORD_PREFIX))
-            .expect("dynamic password variable");
-        assert!(password_line.ends_with(secret));
-        let token = password_line
-            .split_once('=')
-            .and_then(|(name, _)| name.strip_prefix(PASSWORD_PREFIX))
-            .expect("password token");
+            .find_map(|line| line.strip_prefix("TOKEN="))
+            .expect("askpass token");
         assert!(Uuid::parse_str(token).is_ok());
+
+        let pass = env_text
+            .lines()
+            .find_map(|line| line.strip_prefix("PASS="))
+            .expect("askpass password");
+        assert_eq!(pass, secret);
     }
 
     #[test]

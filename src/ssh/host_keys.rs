@@ -58,7 +58,23 @@ impl SshRunner {
                 });
             }
         }
-        let child = keygen.spawn().map_err(SshError::KeygenSpawn)?;
+        let child = {
+            let mut attempts = 0;
+            loop {
+                match keygen.spawn() {
+                    Ok(child) => break child,
+                    Err(err)
+                        if attempts < 10
+                            && (err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                                || err.raw_os_error() == Some(26)) =>
+                    {
+                        attempts += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(err) => return Err(SshError::KeygenSpawn(err)),
+                }
+            }
+        };
         let output = child.wait_with_output().map_err(SshError::KeygenWait)?;
         let _ = lock.unlock();
 

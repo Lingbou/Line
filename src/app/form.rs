@@ -191,6 +191,27 @@ impl FormState {
         }
     }
 
+    pub(super) fn delete_prev_word(&mut self) {
+        let cursor = self.cursor;
+        if cursor > 0
+            && let Some(text) = self.current_text_mut()
+        {
+            let target = crate::app::helpers::prev_word_boundary(text, cursor);
+            crate::app::helpers::remove_char_range(text, target, cursor);
+            self.cursor = target;
+            self.validation_error = None;
+        }
+    }
+
+    pub(super) fn delete_next_word(&mut self) {
+        let cursor = self.cursor;
+        if let Some(text) = self.current_text_mut() {
+            let target = crate::app::helpers::next_word_boundary(text, cursor);
+            crate::app::helpers::remove_char_range(text, cursor, target);
+            self.validation_error = None;
+        }
+    }
+
     pub(super) fn toggle_auth(&mut self, delta: i32) {
         let next = match (&self.auth, delta >= 0) {
             (AuthDraft::Password { .. }, true) => AuthDraft::Key {
@@ -214,6 +235,19 @@ impl FormState {
         self.set_field(FormField::Authentication);
     }
 
+    /// Validate current form fields and build a normalized [`ProfileDraft`].
+    ///
+    /// # Validation Rules
+    ///
+    /// - **Name**: Required, trimmed, safe as a single directory path component,
+    ///   and case-insensitively unique among existing profiles (except when editing).
+    /// - **Host & Username**: If a user pastes `ssh -p 2222 root@example.com`,
+    ///   the shorthand parser automatically splits the username and port. If username
+    ///   or port are left blank, they default to `"root"` and `22`.
+    /// - **Port**: Must be a valid TCP port number between 1 and 65535.
+    /// - **Password**: Must not contain NUL bytes or unescaped newlines. In edit mode,
+    ///   a blank password retains the previously saved secret.
+    /// - **Key**: The private key path or pasted material must not be blank.
     pub(super) fn draft(&self, profiles: &[Profile]) -> Result<ProfileDraft, String> {
         let name = self.name.trim();
         if name.is_empty() {
