@@ -50,6 +50,28 @@ sudo dnf install ./line-<version>-1.x86_64.rpm
 cargo install --path .
 ```
 
+## 命令行用法
+
+```bash
+# 启动交互式 TUI 启动器（默认）
+line
+
+# 直接连接指定服务器（跳过 TUI 秒级直连）
+line <服务器名称>
+
+# 纯文本打印已保存的服务器列表
+line -l
+line --list
+
+# 查看版本号
+line -v
+line --version
+
+# 查看帮助说明
+line -h
+line --help
+```
+
 ## 快捷键操作
 
 ### 主列表

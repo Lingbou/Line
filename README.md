@@ -50,6 +50,28 @@ Prerequisites: Rust (1.75+), OpenSSH, and `ssh-keygen`. Saved-password connectio
 cargo install --path .
 ```
 
+## Command-Line Usage
+
+```bash
+# Launch interactive TUI launcher (default)
+line
+
+# Connect directly to a saved server (skips TUI)
+line <name>
+
+# List all saved connections in plain text
+line -l
+line --list
+
+# Print version
+line -v
+line --version
+
+# Print help
+line -h
+line --help
+```
+
 ## Controls
 
 ### Connection List
