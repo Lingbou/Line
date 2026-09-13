@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cargo install cargo-deb --locked
+          cargo install cargo-generate-rpm --locked
+
+      - name: Extract version tag
+        id: vars
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binaries
+        run: |
+          cargo build --release
+          cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Package Debian (.deb)
+        run: |
+          cargo deb --no-build
+          mkdir -p dist
+          cp target/debian/*.deb dist/
+
+      - name: Package RPM (.rpm)
+        run: |
+          cargo generate-rpm
+          mkdir -p dist
+          cp target/generate-rpm/*.rpm dist/
+
+      - name: Package Tarballs (.tar.gz)
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          
+          # Dynamic glibc build
+          mkdir -p "dist/line-${TAG}-x86_64-unknown-linux-gnu"
+          cp target/release/line "dist/line-${TAG}-x86_64-unknown-linux-gnu/"
+          cp README.md LICENSE "dist/line-${TAG}-x86_64-unknown-linux-gnu/"
+          tar -czf "dist/line-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C dist "line-${TAG}-x86_64-unknown-linux-gnu"
+          rm -rf "dist/line-${TAG}-x86_64-unknown-linux-gnu"
+
+          # Static musl build (compatible across all Linux distros)
+          mkdir -p "dist/line-${TAG}-x86_64-unknown-linux-musl"
+          cp target/x86_64-unknown-linux-musl/release/line "dist/line-${TAG}-x86_64-unknown-linux-musl/"
+          cp README.md LICENSE "dist/line-${TAG}-x86_64-unknown-linux-musl/"
+          tar -czf "dist/line-${TAG}-x86_64-unknown-linux-musl.tar.gz" -C dist "line-${TAG}-x86_64-unknown-linux-musl"
+          rm -rf "dist/line-${TAG}-x86_64-unknown-linux-musl"
+
+      - name: Generate SHA256 Checksums
+        run: |
+          cd dist
+          sha256sum * > "line-${{ steps.vars.outputs.tag }}-checksums.txt"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

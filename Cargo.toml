@@ -3,6 +3,11 @@ name = "line"
 version = "0.1.0"
 edition = "2024"
 description = "A lightweight terminal SSH connection manager"
+authors = ["Xingqiu Xu <hilbertanjou83@gmail.com>"]
+repository = "https://github.com/Lingbou/Line"
+homepage = "https://github.com/Lingbou/Line"
+readme = "README.md"
+
 license = "GPL-3.0-only"
 
 [dependencies]
@@ -27,3 +32,23 @@ tempfile = "3"
 codegen-units = 1
 lto = "thin"
 strip = true
+
+[package.metadata.deb]
+maintainer = "Xingqiu Xu <hilbertanjou83@gmail.com>"
+copyright = "2026 Xingqiu Xu"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+Line is a lightweight Linux TUI for quickly opening SSH connections without \
+repeatedly typing hostnames, usernames, or passwords."""
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/line", "usr/bin/line", "755"],
+    ["README.md", "usr/share/doc/line/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/line", dest = "/usr/bin/line", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/line/README.md", mode = "644" },
+]
