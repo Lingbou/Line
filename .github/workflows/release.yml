@@ -19,6 +19,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          components: clippy
           targets: x86_64-unknown-linux-musl
 
       - name: Install packaging tools
@@ -33,36 +34,35 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
+          PACKAGE_VERSION="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "line") | .version')"
+          if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "tag version $VERSION does not match Cargo.toml version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Build release binaries
+      - name: Run release checks
         run: |
-          cargo build --release
-          cargo build --release --target x86_64-unknown-linux-musl
+          cargo test --all-targets --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Build static release binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
       - name: Package Debian (.deb)
         run: |
-          cargo deb --no-build
           mkdir -p dist
-          cp target/debian/*.deb dist/
+          cargo deb --no-build --target x86_64-unknown-linux-musl -o dist
 
       - name: Package RPM (.rpm)
         run: |
-          cargo generate-rpm
           mkdir -p dist
-          cp target/generate-rpm/*.rpm dist/
+          cargo generate-rpm --target x86_64-unknown-linux-musl -o dist
 
       - name: Package Tarballs (.tar.gz)
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          
-          # Dynamic glibc build
-          mkdir -p "dist/line-${TAG}-x86_64-unknown-linux-gnu"
-          cp target/release/line "dist/line-${TAG}-x86_64-unknown-linux-gnu/"
-          cp README.md LICENSE "dist/line-${TAG}-x86_64-unknown-linux-gnu/"
-          tar -czf "dist/line-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C dist "line-${TAG}-x86_64-unknown-linux-gnu"
-          rm -rf "dist/line-${TAG}-x86_64-unknown-linux-gnu"
 
           # Static musl build (compatible across all Linux distros)
           mkdir -p "dist/line-${TAG}-x86_64-unknown-linux-musl"

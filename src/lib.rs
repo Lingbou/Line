@@ -7,7 +7,8 @@
 //!
 //! ## Architecture Overview
 //!
-//! The application is decomposed into five decoupled modules:
+//! The library is decomposed into four decoupled modules; terminal lifecycle
+//! and the event loop live in the binary's `runtime` module.
 //!
 //! - [`app`]: Pure, state-driven logic and event handling. Contains the application
 //!   state machine, form validation, and text editing without any I/O or rendering dependencies.
@@ -31,3 +32,8 @@ pub mod app;
 pub mod config;
 pub mod ssh;
 pub mod ui;
+
+mod private_fs;
+
+#[cfg(not(target_os = "linux"))]
+compile_error!("Line currently supports Linux only");

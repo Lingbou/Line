@@ -42,12 +42,14 @@ sudo dnf install ./line-<version>-1.x86_64.rpm
 
 从 [Releases](https://github.com/Lingbou/Line/releases) 下载 `line-v<version>-x86_64-unknown-linux-musl.tar.gz`，解压后将 `line` 放到 `~/.local/bin/` 或 `/usr/local/bin/` 即可直接运行。
 
+二进制本身是静态链接的，但 Line 仍然依赖系统安装的 OpenSSH 客户端和 `ssh-keygen`。
+
 ### 源码编译安装
 
-依赖要求：Rust (1.75+)、系统自带的 OpenSSH 与 `ssh-keygen`。保存密码连接使用 `SSH_ASKPASS`，需要 OpenSSH 8.4 或更高版本。
+依赖要求：Rust (1.88+)、系统自带的 OpenSSH 与 `ssh-keygen`。保存密码连接使用 `SSH_ASKPASS`，需要 OpenSSH 8.4 或更高版本。
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 ## 命令行用法
@@ -56,8 +58,11 @@ cargo install --path .
 # 启动交互式 TUI 启动器（默认）
 line
 
-# 直接连接指定服务器（跳过 TUI 秒级直连）
+# 直接连接指定服务器（跳过 TUI）
 line <服务器名称>
+
+# 连接名称以 '-' 开头时使用
+line -- <服务器名称>
 
 # 纯文本打印已保存的服务器列表
 line -l
@@ -131,6 +136,12 @@ Line 将配置独立保存在 `~/.line/` 目录下（可通过环境变量 `LINE
 ```
 
 导入私钥时如果未指定公钥，Line 会自动调用 `ssh-keygen` 推导补全对应的 `.pub` 文件。
+
+当前密码连接会将密码以明文保存在 `profiles.json` 及其备份中，仅依赖 `~/.line/` 和文件权限保护。如果不能接受明文凭据存储，请使用密钥认证。
+
+## OpenSSH 行为说明
+
+为了保证连接行为可预测，Line 不会加载用户的 `~/.ssh/config`，只加载系统 `/etc/ssh/ssh_config`；同时不使用用户或系统全局的 `known_hosts`，而是使用 `~/.line/known_hosts`。当前版本也不支持 SSH agent 身份和带口令的私钥。
 
 ## 代码结构
 

@@ -1,3 +1,4 @@
+use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
 
 use unicode_width::UnicodeWidthStr;
@@ -7,32 +8,107 @@ use line::ssh::SshRunner;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub(crate) fn handle_cli_args(args: &[String]) -> Option<ExitCode> {
-    if args.len() <= 1 {
-        return None;
-    }
+#[derive(Debug, PartialEq, Eq)]
+enum CliCommand {
+    Help,
+    Version,
+    List,
+    Connect(String),
+}
 
-    let first = args[1].as_str();
-    match first {
-        "-v" | "--version" => {
-            println!("line {VERSION}");
-            Some(ExitCode::SUCCESS)
+pub(crate) fn handle_cli_args(args: &[OsString]) -> Option<ExitCode> {
+    let command = match parse_args(args) {
+        Ok(Some(command)) => command,
+        Ok(None) => return None,
+        Err(error) => {
+            eprintln!("line: {error}");
+            eprintln!("Try 'line --help' for more information.");
+            return Some(ExitCode::FAILURE);
         }
-        "-h" | "--help" => {
+    };
+
+    match command {
+        CliCommand::Help => {
             print_help();
             Some(ExitCode::SUCCESS)
         }
-        "-l" | "--list" => {
-            print_list();
+        CliCommand::Version => {
+            println!("line {VERSION}");
             Some(ExitCode::SUCCESS)
         }
-        arg if arg.starts_with('-') => {
-            eprintln!("line: unrecognized option '{arg}'");
-            eprintln!("Try 'line --help' for more information.");
-            Some(ExitCode::FAILURE)
-        }
-        name => Some(direct_connect(name)),
+        CliCommand::List => match print_list() {
+            Ok(()) => Some(ExitCode::SUCCESS),
+            Err(error) => {
+                eprintln!("line: {error}");
+                Some(ExitCode::FAILURE)
+            }
+        },
+        CliCommand::Connect(name) => Some(direct_connect(&name)),
     }
+}
+
+fn parse_args(args: &[OsString]) -> Result<Option<CliCommand>, String> {
+    let Some(first) = args.get(1) else {
+        return Ok(None);
+    };
+
+    if first == "--" {
+        return match args {
+            [_, _, name] => Ok(Some(CliCommand::Connect(os_to_string(name)?))),
+            [_, _] => Err("missing connection name after '--'".to_owned()),
+            _ => Err("too many arguments".to_owned()),
+        };
+    }
+
+    if is_option(first, "-h", "--help") {
+        return exactly_one_argument(args, CliCommand::Help);
+    }
+    if is_option(first, "-v", "--version") {
+        return exactly_one_argument(args, CliCommand::Version);
+    }
+    if is_option(first, "-l", "--list") {
+        return exactly_one_argument(args, CliCommand::List);
+    }
+    if first.to_string_lossy().starts_with('-') {
+        return Err(format!("unrecognized option '{}'", first.to_string_lossy()));
+    }
+    if args.len() != 2 {
+        return Err("too many arguments".to_owned());
+    }
+    Ok(Some(CliCommand::Connect(os_to_string(first)?)))
+}
+
+fn exactly_one_argument(
+    args: &[OsString],
+    command: CliCommand,
+) -> Result<Option<CliCommand>, String> {
+    if args.len() == 2 {
+        Ok(Some(command))
+    } else {
+        Err("too many arguments".to_owned())
+    }
+}
+
+fn is_option(value: &OsStr, short: &str, long: &str) -> bool {
+    value == short || value == long
+}
+
+fn os_to_string(value: &OsStr) -> Result<String, String> {
+    value
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "connection name is not valid UTF-8".to_owned())
+}
+
+fn open_store() -> Result<ConfigStore, String> {
+    ConfigStore::in_home().map_err(|error| format!("failed to access config: {error}"))
+}
+
+fn load_profiles(store: &ConfigStore) -> Result<Vec<Profile>, String> {
+    store
+        .load()
+        .map(|data| data.profiles)
+        .map_err(|error| format!("failed to load profiles: {error}"))
 }
 
 fn print_help() {
@@ -42,6 +118,7 @@ fn print_help() {
 USAGE:
     line                          Launch interactive TUI
     line <NAME>                   Connect directly to a saved server
+    line -- <NAME>                Connect to a name beginning with '-'
     line -l, --list               List saved connection profiles
     line -v, --version            Print version information
     line -h, --help               Print this help message
@@ -66,26 +143,13 @@ fn pad_right(s: &str, target_width: usize) -> String {
     }
 }
 
-fn print_list() {
-    let store = match ConfigStore::in_home() {
-        Ok(store) => store,
-        Err(err) => {
-            eprintln!("line: failed to access config: {err}");
-            return;
-        }
-    };
-
-    let profiles = match store.load() {
-        Ok(data) => data.profiles,
-        Err(err) => {
-            eprintln!("line: failed to load profiles: {err}");
-            return;
-        }
-    };
+fn print_list() -> Result<(), String> {
+    let store = open_store()?;
+    let profiles = load_profiles(&store)?;
 
     if profiles.is_empty() {
         println!("No connections saved. Run 'line' to add a connection.");
-        return;
+        return Ok(());
     }
 
     let max_name = profiles
@@ -113,6 +177,7 @@ fn print_list() {
             auth
         );
     }
+    Ok(())
 }
 
 pub(crate) fn find_profile<'a>(
@@ -178,23 +243,23 @@ pub(crate) fn find_profile<'a>(
 }
 
 fn direct_connect(name: &str) -> ExitCode {
-    let store = match ConfigStore::in_home() {
+    let store = match open_store() {
         Ok(store) => store,
-        Err(err) => {
-            eprintln!("line: {err}");
+        Err(error) => {
+            eprintln!("line: {error}");
             return ExitCode::FAILURE;
         }
     };
 
-    let data = match store.load() {
-        Ok(data) => data,
-        Err(err) => {
-            eprintln!("line: failed to load profiles: {err}");
+    let profiles = match load_profiles(&store) {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            eprintln!("line: {error}");
             return ExitCode::FAILURE;
         }
     };
 
-    let profile = match find_profile(&data.profiles, name) {
+    let profile = match find_profile(&profiles, name) {
         Ok(p) => p,
         Err(err) => {
             eprintln!("line: {err}");
@@ -244,6 +309,10 @@ mod tests {
         }
     }
 
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
     #[test]
     fn find_profile_matches_exact_case_insensitively() {
         let profiles = vec![test_profile("Production"), test_profile("Staging")];
@@ -291,26 +360,39 @@ mod tests {
     }
 
     #[test]
-    fn cli_flags_are_recognized() {
-        assert_eq!(handle_cli_args(&["line".into()]), None);
+    fn cli_parser_recognizes_commands_and_rejects_extra_arguments() {
+        assert_eq!(parse_args(&args(&["line"])), Ok(None));
         assert_eq!(
-            handle_cli_args(&["line".into(), "-v".into()]),
-            Some(ExitCode::SUCCESS)
+            parse_args(&args(&["line", "-v"])),
+            Ok(Some(CliCommand::Version))
         );
         assert_eq!(
-            handle_cli_args(&["line".into(), "--version".into()]),
-            Some(ExitCode::SUCCESS)
+            parse_args(&args(&["line", "--help"])),
+            Ok(Some(CliCommand::Help))
         );
         assert_eq!(
-            handle_cli_args(&["line".into(), "-h".into()]),
-            Some(ExitCode::SUCCESS)
+            parse_args(&args(&["line", "-l"])),
+            Ok(Some(CliCommand::List))
         );
         assert_eq!(
-            handle_cli_args(&["line".into(), "--help".into()]),
-            Some(ExitCode::SUCCESS)
+            parse_args(&args(&["line", "production"])),
+            Ok(Some(CliCommand::Connect("production".into())))
         );
         assert_eq!(
-            handle_cli_args(&["line".into(), "--unknown-flag".into()]),
+            parse_args(&args(&["line", "--", "-production"])),
+            Ok(Some(CliCommand::Connect("-production".into())))
+        );
+        assert!(parse_args(&args(&["line", "--list", "extra"])).is_err());
+        assert!(parse_args(&args(&["line", "production", "extra"])).is_err());
+        assert!(parse_args(&args(&["line", "--"])).is_err());
+        assert!(parse_args(&args(&["line", "--unknown-flag"])).is_err());
+    }
+
+    #[test]
+    fn cli_handler_returns_none_for_the_interactive_entrypoint() {
+        assert_eq!(handle_cli_args(&args(&["line"])), None);
+        assert_eq!(
+            handle_cli_args(&args(&["line", "--unknown-flag"])),
             Some(ExitCode::FAILURE)
         );
     }

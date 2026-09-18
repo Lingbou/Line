@@ -26,6 +26,7 @@ pub struct SshRunner {
     pub(super) ssh_keygen_program: PathBuf,
     askpass_program: PathBuf,
     probe_version: bool,
+    forward_stderr: bool,
 }
 
 impl SshRunner {
@@ -39,6 +40,7 @@ impl SshRunner {
             ssh_keygen_program: PathBuf::from("ssh-keygen"),
             askpass_program,
             probe_version: true,
+            forward_stderr: true,
         })
     }
 
@@ -57,6 +59,7 @@ impl SshRunner {
             ssh_keygen_program: ssh_keygen_program.into(),
             askpass_program: askpass_program.into(),
             probe_version: false,
+            forward_stderr: false,
         }
     }
 
@@ -140,7 +143,7 @@ impl SshRunner {
             .stderr
             .take()
             .expect("stderr was configured as piped before spawning ssh");
-        let reader = spawn_stderr_reader(stderr);
+        let reader = spawn_stderr_reader(stderr, self.forward_stderr);
 
         let (status, cancelled) = wait_for_child(&mut child, cancel)?;
         let stderr_tail = if cancelled {
@@ -170,8 +173,13 @@ impl SshRunner {
         };
         command
             // Keep local OpenSSH diagnostics stable for post-session error
-            // classification. This does not set the remote shell's locale.
-            .env("LC_ALL", "C")
+            // classification. LC_MESSAGES is much narrower than LC_ALL, so if
+            // the system config forwards LC_* variables, the remote session
+            // keeps its numeric/date/locale behavior while only messages are
+            // forced to C.
+            .env_remove("LC_ALL")
+            .env("LC_MESSAGES", "C")
+            .env("LANGUAGE", "C")
             .arg("-F")
             .arg(system_config)
             .arg("-o")
@@ -421,6 +429,35 @@ mod tests {
         );
         assert!(args.contains(&"IdentityAgent=none"));
         assert_eq!(args.last().copied(), Some("alice@example.com"));
+    }
+
+    #[test]
+    fn connection_uses_message_locale_without_forwarding_lc_all() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("record");
+        let fake = fake_ssh(
+            &dir,
+            &record,
+            r#"
+            printf 'LC_ALL=%s\n' "${LC_ALL-unset}" > "$RECORD"
+            printf 'LC_MESSAGES=%s\n' "${LC_MESSAGES-unset}" >> "$RECORD"
+            printf 'LANGUAGE=%s\n' "${LANGUAGE-unset}" >> "$RECORD"
+            exit 0
+            "#,
+        );
+        let runner = SshRunner::for_test(dir.path().join("line"), fake, "ssh-keygen", "/bin/false");
+
+        runner
+            .connect(&profile(AuthMethod::Key {
+                private_key: PathBuf::from("keys/Example/key"),
+                public_key: PathBuf::from("keys/Example/key.pub"),
+            }))
+            .expect("ssh invocation");
+
+        assert_eq!(
+            fs::read_to_string(record).expect("recorded environment"),
+            "LC_ALL=unset\nLC_MESSAGES=C\nLANGUAGE=C\n"
+        );
     }
 
     #[test]

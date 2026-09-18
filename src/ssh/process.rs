@@ -1,41 +1,38 @@
 use std::fs::{self, OpenOptions};
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use crate::config::Profile;
+use crate::private_fs;
 
 use super::{STDERR_TAIL_LIMIT, SessionResult, SshError};
 
 pub(super) fn prepare_line_directory(line_dir: &Path) -> Result<(), SshError> {
-    fs::create_dir_all(line_dir).map_err(|source| SshError::CreateLineDirectory {
+    private_fs::create_private_dir(line_dir).map_err(|source| SshError::CreateLineDirectory {
         path: line_dir.to_path_buf(),
         source,
     })?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::set_permissions(line_dir, fs::Permissions::from_mode(0o700)).map_err(|source| {
-            SshError::CreateLineDirectory {
-                path: line_dir.to_path_buf(),
-                source,
-            }
-        })?;
-
         let known_hosts = line_dir.join("known_hosts");
         OpenOptions::new()
             .create(true)
             .append(true)
             .open(&known_hosts)
-            .and_then(|file| file.set_permissions(fs::Permissions::from_mode(0o600)))
             .map_err(|source| SshError::CreateLineDirectory {
                 path: line_dir.to_path_buf(),
                 source,
             })?;
+        private_fs::set_private_mode(&known_hosts, 0o600).map_err(|source| {
+            SshError::CreateLineDirectory {
+                path: line_dir.to_path_buf(),
+                source,
+            }
+        })?;
     }
 
     Ok(())
@@ -63,7 +60,10 @@ pub(super) fn destination(profile: &Profile) -> String {
     }
 }
 
-pub(super) fn spawn_stderr_reader(mut stderr: ChildStderr) -> JoinHandle<io::Result<Vec<u8>>> {
+pub(super) fn spawn_stderr_reader(
+    mut stderr: ChildStderr,
+    forward_live: bool,
+) -> JoinHandle<io::Result<Vec<u8>>> {
     thread::spawn(move || {
         let mut tail = Vec::with_capacity(STDERR_TAIL_LIMIT);
         let mut buffer = [0_u8; 8192];
@@ -74,10 +74,11 @@ pub(super) fn spawn_stderr_reader(mut stderr: ChildStderr) -> JoinHandle<io::Res
                 break;
             }
 
-            // Forward diagnostics as they arrive. A closed parent stderr
-            // (for example, a test harness) must not prevent us from draining
-            // the pipe and allowing ssh to exit.
-            if io::stderr().is_terminal() {
+            // Forward diagnostics as they arrive. This must not depend on
+            // stderr being a terminal: direct CLI users may redirect it to a
+            // file or pipe. A closed parent stderr must not prevent us from
+            // draining the pipe and allowing ssh to exit.
+            if forward_live {
                 let mut output = io::stderr().lock();
                 let _ = output.write_all(&buffer[..bytes_read]);
                 let _ = output.flush();

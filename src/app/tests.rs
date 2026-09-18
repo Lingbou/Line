@@ -516,6 +516,19 @@ fn password_paste_drops_one_clipboard_line_ending_but_preserves_spaces() {
 }
 
 #[test]
+fn port_paste_keeps_only_ascii_digits() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.field = FormField::Port;
+    form.port.clear();
+    form.cursor = 0;
+
+    app.handle_event(Event::Paste("ab12:34\n".into()));
+
+    assert_eq!(app.form().unwrap().port, "1234");
+}
+
+#[test]
 fn ctrl_left_and_right_jump_words_in_form_fields() {
     let mut app = App::new(Vec::new());
     let form = app.form_mut().unwrap();

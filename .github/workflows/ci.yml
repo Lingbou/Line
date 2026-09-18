@@ -26,10 +26,93 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy lints
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
       - name: Run test suite
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --locked
+
+  msrv:
+    name: Minimum Supported Rust Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check all targets with the MSRV
+        run: cargo check --all-targets --locked
+
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit
+
+  package:
+    name: Linux Package Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev rpm musl-tools
+          cargo install cargo-deb --locked
+          cargo install cargo-generate-rpm --locked
+
+      - name: Build static release binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Build and inspect packages
+        run: |
+          set -euo pipefail
+          rm -rf package-smoke
+          mkdir -p package-smoke
+          cargo deb --no-build --target x86_64-unknown-linux-musl -o package-smoke
+          cargo generate-rpm --target x86_64-unknown-linux-musl -o package-smoke
+
+          DEB="$(find package-smoke -maxdepth 1 -name '*.deb' -print -quit)"
+          RPM="$(find package-smoke -maxdepth 1 -name '*.rpm' -print -quit)"
+          test -n "$DEB"
+          test -n "$RPM"
+
+          dpkg-deb -f "$DEB" Depends | grep -q 'openssh-client'
+          rpm -qpR "$RPM" | grep -q '^openssh-clients$'
+          if dpkg-deb -f "$DEB" Depends | grep -q 'libc6'; then
+            echo "static package unexpectedly depends on glibc" >&2
+            exit 1
+          fi
+          if rpm -qpR "$RPM" | grep -q 'GLIBC_'; then
+            echo "static package unexpectedly depends on a GLIBC symbol version" >&2
+            exit 1
+          fi

@@ -12,7 +12,7 @@ fn main() -> ExitCode {
         return ExitCode::from(code as u8);
     }
 
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if let Some(code) = cli::handle_cli_args(&args) {
         return code;
     }

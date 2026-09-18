@@ -76,7 +76,7 @@ impl SshRunner {
             }
         };
         let output = child.wait_with_output().map_err(SshError::KeygenWait)?;
-        let _ = lock.unlock();
+        let _ = FileExt::unlock(&lock);
 
         if output.status.success() {
             return Ok(());

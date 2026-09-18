@@ -1,10 +1,12 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 use thiserror::Error;
+
+use crate::private_fs;
 
 use super::keys::{KeyError, KeyStore};
 use super::model::{Profiles, ValidationError};
@@ -170,16 +172,8 @@ impl ConfigStore {
                 std::process::id(),
                 unique_suffix()
             ));
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(&temporary)
+            private_fs::write_new_private_file(&temporary, &bytes)
                 .map_err(|source| io_error(temporary.clone(), source))?;
-            file.write_all(&bytes)
-                .and_then(|_| file.sync_all())
-                .map_err(|source| io_error(temporary.clone(), source))?;
-            drop(file);
             fs::rename(&temporary, &path).map_err(|source| {
                 let _ = fs::remove_file(&temporary);
                 io_error(path.clone(), source)
@@ -274,7 +268,7 @@ impl ConfigStore {
             source,
         })?;
         let result = operation(self);
-        let _ = lock.unlock();
+        let _ = FileExt::unlock(&lock);
         result
     }
 
@@ -286,20 +280,11 @@ impl ConfigStore {
             std::process::id(),
             unique_suffix()
         ));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|source| io_error(temporary.clone(), source))?;
         let write_result = (|| {
-            file.write_all(&bytes)
-                .map_err(|source| io_error(temporary.clone(), source))?;
-            file.sync_all()
+            private_fs::write_new_private_file(&temporary, &bytes)
                 .map_err(|source| io_error(temporary.clone(), source))?;
             Ok::<(), ConfigError>(())
         })();
-        drop(file);
         if let Err(error) = write_result {
             let _ = fs::remove_file(&temporary);
             return Err(error);
@@ -360,13 +345,11 @@ impl ConfigStore {
 }
 
 fn create_private_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).map_err(|source| io_error(path.to_owned(), source))?;
-    set_mode(path, 0o700)
+    private_fs::create_private_dir(path).map_err(|source| io_error(path.to_owned(), source))
 }
 
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        .map_err(|source| io_error(path.to_owned(), source))
+    private_fs::set_private_mode(path, mode).map_err(|source| io_error(path.to_owned(), source))
 }
 
 fn io_error(path: PathBuf, source: io::Error) -> ConfigError {
@@ -383,7 +366,5 @@ fn canonical_json(profiles: &Profiles) -> Result<Vec<u8>> {
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
-    File::open(path)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| io_error(path.to_owned(), source))
+    private_fs::sync_directory(path).map_err(|source| io_error(path.to_owned(), source))
 }

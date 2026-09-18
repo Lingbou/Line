@@ -42,12 +42,14 @@ sudo dnf install ./line-<version>-1.x86_64.rpm
 
 Download `line-v<version>-x86_64-unknown-linux-musl.tar.gz` from [Releases](https://github.com/Lingbou/Line/releases), extract it, and move `line` to `/usr/local/bin/` or `~/.local/bin/`.
 
+The binary itself is static, but Line still invokes the system OpenSSH client and `ssh-keygen`.
+
 ### Build from Source
 
-Prerequisites: Rust (1.75+), OpenSSH, and `ssh-keygen`. Saved-password connections use `SSH_ASKPASS` and require OpenSSH 8.4+.
+Prerequisites: Rust (1.88+), OpenSSH, and `ssh-keygen`. Saved-password connections use `SSH_ASKPASS` and require OpenSSH 8.4+.
 
 ```bash
-cargo install --path .
+cargo install --path . --locked
 ```
 
 ## Command-Line Usage
@@ -58,6 +60,9 @@ line
 
 # Connect directly to a saved server (skips TUI)
 line <name>
+
+# Connect to a profile whose name begins with '-'
+line -- <name>
 
 # List all saved connections in plain text
 line -l
@@ -131,6 +136,12 @@ All state is kept under `~/.line/` (or `$LINE_CONFIG_DIR`):
 ```
 
 If only a private key is imported without a public key, Line automatically derives the corresponding `.pub` file using `ssh-keygen`.
+
+Password profiles currently store the password as plaintext in `profiles.json` and its backup, protected by directory and file permissions. Use key authentication if plaintext credential storage is not acceptable.
+
+## OpenSSH Behavior
+
+Line deliberately keeps connection behavior deterministic and does not load `~/.ssh/config`. It loads the system `/etc/ssh/ssh_config`, ignores the user's and system-wide `known_hosts`, and uses `~/.line/known_hosts` instead. SSH agent identities and passphrase-protected private keys are not supported in this version.
 
 ## Source Layout
 
