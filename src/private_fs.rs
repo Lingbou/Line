@@ -1,4 +1,6 @@
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -26,6 +28,20 @@ pub(crate) fn write_new_private_file(path: &Path, bytes: &[u8]) -> io::Result<()
     set_private_mode(path, 0o600)
 }
 
+/// Flush a directory entry so a rename that already happened survives a crash.
+///
+/// Unix opens the directory and syncs it. Windows cannot open a directory as a
+/// file without backup semantics, and NTFS applies the rename to its own
+/// metadata journal, so this is deliberately a no-op there — the contents were
+/// already flushed by [`write_new_private_file`] before the rename.
 pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
+    #[cfg(unix)]
+    {
+        File::open(path)?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
