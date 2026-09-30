@@ -1,4 +1,6 @@
-use std::fs::{self, OpenOptions};
+#[cfg(unix)]
+use std::fs;
+use std::fs::OpenOptions;
 use std::process::{Command, Stdio};
 
 use fs2::FileExt;
@@ -114,7 +116,7 @@ fn known_host_target(profile: &Profile) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::fs;
 
@@ -147,6 +149,7 @@ mod tests {
         }));
     }
 
+    #[cfg(unix)]
     #[test]
     fn replacing_nondefault_port_host_key_uses_openssh_known_hosts_target() {
         let dir = TempDir::new().expect("temp dir");
@@ -180,6 +183,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn replacing_default_port_ipv6_host_key_uses_bare_address() {
         let dir = TempDir::new().expect("temp dir");
@@ -206,6 +210,7 @@ mod tests {
         assert_eq!(args.lines().nth(1), Some("2001:db8::10"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn failed_host_key_replacement_returns_the_tool_diagnostic() {
         let dir = TempDir::new().expect("temp dir");

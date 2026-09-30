@@ -1,10 +1,13 @@
 use std::{
     env,
     ffi::OsString,
-    fs, io,
+    io,
     path::{Path, PathBuf},
     process::{Child, Command},
 };
+
+#[cfg(unix)]
+use std::fs;
 
 use thiserror::Error;
 
@@ -14,11 +17,13 @@ pub(crate) enum PlatformError {
     HomeNotSet,
 }
 
+#[cfg(unix)]
 pub(crate) struct InterruptGuard {
     old_int: libc::sighandler_t,
     old_quit: libc::sighandler_t,
 }
 
+#[cfg(unix)]
 impl Drop for InterruptGuard {
     fn drop(&mut self) {
         unsafe {
@@ -27,6 +32,11 @@ impl Drop for InterruptGuard {
         }
     }
 }
+
+/// Windows delivers console control events rather than POSIX signals, and
+/// `ssh.exe` owns the console while it runs, so there is nothing to guard.
+#[cfg(not(unix))]
+pub(crate) struct InterruptGuard;
 
 /// Platform decisions that are not simply POSIX.
 ///
@@ -53,42 +63,103 @@ pub(crate) trait Platform: Send + Sync {
     /// points OpenSSH at the null device so the user's own `~/.ssh/config`
     /// still cannot change what a saved profile means.
     fn system_ssh_config(&self) -> PathBuf {
-        let path = Path::new("/etc/ssh/ssh_config");
-        if path.is_file() {
-            path.to_owned()
-        } else {
-            PathBuf::from("/dev/null")
+        #[cfg(unix)]
+        {
+            let path = Path::new("/etc/ssh/ssh_config");
+            if path.is_file() {
+                path.to_owned()
+            } else {
+                PathBuf::from("/dev/null")
+            }
+        }
+        #[cfg(windows)]
+        {
+            let path = program_data().join("ssh").join("ssh_config");
+            if path.is_file() {
+                path
+            } else {
+                PathBuf::from("NUL")
+            }
         }
     }
 
     fn null_device(&self) -> PathBuf {
-        PathBuf::from("/dev/null")
+        #[cfg(unix)]
+        {
+            PathBuf::from("/dev/null")
+        }
+        #[cfg(windows)]
+        {
+            PathBuf::from("NUL")
+        }
     }
 
+    /// Windows has no POSIX mode bits. The ADR records that v0.2 relies on the
+    /// user-profile ACL there instead of pretending to tighten anything.
     fn set_private_mode(&self, path: &Path, mode: u32) -> io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        }
+        #[cfg(windows)]
+        {
+            let _ = (path, mode);
+            Ok(())
+        }
     }
 
     fn reset_child_signals(&self, command: &mut Command) {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            command.pre_exec(|| {
-                libc::signal(libc::SIGINT, libc::SIG_DFL);
-                libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-                Ok(())
-            });
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    libc::signal(libc::SIGINT, libc::SIG_DFL);
+                    libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = command;
         }
     }
 
     fn install_interrupt_guard(&self) -> InterruptGuard {
-        let old_int = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
-        let old_quit = unsafe { libc::signal(libc::SIGQUIT, libc::SIG_IGN) };
-        InterruptGuard { old_int, old_quit }
+        #[cfg(unix)]
+        {
+            let old_int = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+            let old_quit = unsafe { libc::signal(libc::SIGQUIT, libc::SIG_IGN) };
+            InterruptGuard { old_int, old_quit }
+        }
+        #[cfg(windows)]
+        {
+            InterruptGuard
+        }
     }
 
     fn is_interrupt_signal(&self, signal: Option<i32>) -> bool {
-        matches!(signal, Some(libc::SIGINT) | Some(libc::SIGQUIT))
+        #[cfg(unix)]
+        {
+            matches!(signal, Some(libc::SIGINT) | Some(libc::SIGQUIT))
+        }
+        #[cfg(windows)]
+        {
+            // Windows child processes report an exit code, never a signal.
+            let _ = signal;
+            false
+        }
+    }
+
+    /// Whether a saved password can be handed to OpenSSH on this platform.
+    ///
+    /// The plaintext password travels through `SSH_ASKPASS`, which Windows
+    /// OpenSSH does not implement, so a password profile is refused there
+    /// rather than left to hang on an interactive prompt.
+    fn supports_saved_passwords(&self) -> bool {
+        cfg!(unix)
     }
 
     fn terminate_child_tree(&self, child: &mut Child);
@@ -102,6 +173,11 @@ pub(crate) fn current() -> &'static dyn Platform {
 #[cfg(target_os = "macos")]
 pub(crate) fn current() -> &'static dyn Platform {
     &MACOS
+}
+
+#[cfg(windows)]
+pub(crate) fn current() -> &'static dyn Platform {
+    &WINDOWS
 }
 
 #[cfg(target_os = "linux")]
@@ -120,6 +196,9 @@ impl Platform for LinuxPlatform {
     }
 }
 
+#[cfg(windows)]
+static WINDOWS: WindowsPlatform = WindowsPlatform;
+
 #[cfg(target_os = "macos")]
 struct MacPlatform;
 
@@ -130,12 +209,39 @@ impl Platform for MacPlatform {
     }
 }
 
+#[cfg(windows)]
+struct WindowsPlatform;
+
+#[cfg(windows)]
+impl Platform for WindowsPlatform {
+    fn terminate_child_tree(&self, child: &mut Child) {
+        // `taskkill /T` walks the tree the same way the Unix collectors do,
+        // and `/F` matches the SIGKILL the other platforms send.
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 fn config_root_from(get_env: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, PlatformError> {
     if let Some(path) = get_env("LINE_CONFIG_DIR") {
         return Ok(PathBuf::from(path));
     }
-    let home = get_env("HOME").ok_or(PlatformError::HomeNotSet)?;
+    // Windows sets USERPROFILE; the Unix shells and Git Bash set HOME. Both
+    // name the same user directory, so either is accepted on either platform.
+    let home = get_env("HOME")
+        .or_else(|| get_env("USERPROFILE"))
+        .ok_or(PlatformError::HomeNotSet)?;
     Ok(PathBuf::from(home).join(".line"))
+}
+
+#[cfg(windows)]
+fn program_data() -> PathBuf {
+    env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("C:\\ProgramData"))
 }
 
 /// Kill a child and everything it started.
@@ -143,6 +249,7 @@ fn config_root_from(get_env: impl Fn(&str) -> Option<OsString>) -> Result<PathBu
 /// A cancelled `ssh` can leave `ProxyCommand` descendants holding a duplicate
 /// of stderr, which would block terminal restoration, so the tree is collected
 /// first and killed leaves-first.
+#[cfg(unix)]
 fn terminate_child_tree(child: &mut Child, collect: fn(i32, &mut Vec<i32>)) {
     let root = child.id() as i32;
     let mut descendants = Vec::new();
@@ -210,12 +317,33 @@ mod tests {
         assert_eq!(root, PathBuf::from("/tmp/custom-line"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn recognizes_terminal_interrupt_signals() {
         assert!(current().is_interrupt_signal(Some(libc::SIGINT)));
         assert!(current().is_interrupt_signal(Some(libc::SIGQUIT)));
         assert!(!current().is_interrupt_signal(Some(libc::SIGTERM)));
         assert!(!current().is_interrupt_signal(None));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reports_no_posix_interrupts_and_no_saved_passwords() {
+        assert!(!current().is_interrupt_signal(Some(libc::SIGINT)));
+        assert!(!current().is_interrupt_signal(None));
+        assert!(!current().supports_saved_passwords());
+    }
+
+    #[test]
+    fn user_profile_is_used_when_home_is_absent() {
+        let root = config_root_from(|key| match key {
+            "HOME" => None,
+            "USERPROFILE" => Some(OsString::from(r"C:\Users\tester")),
+            _ => None,
+        })
+        .expect("config root");
+
+        assert_eq!(root, PathBuf::from(r"C:\Users\tester").join(".line"));
     }
 
     #[test]

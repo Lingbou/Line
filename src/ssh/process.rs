@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};

@@ -1,5 +1,4 @@
 use std::fs::{self, OpenOptions};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use fs2::FileExt;
@@ -57,10 +56,7 @@ pub(super) fn write_atomic_key_file(path: &Path, bytes: &[u8]) -> KeyResult<()> 
 }
 
 pub(super) fn replace_with_hard_link(source: &Path, destination: &Path) -> KeyResult<()> {
-    if let (Ok(source_metadata), Ok(destination_metadata)) =
-        (fs::metadata(source), fs::metadata(destination))
-        && same_file(&source_metadata, &destination_metadata)
-    {
+    if same_file(source, destination) {
         return Ok(());
     }
     let parent = destination
@@ -89,10 +85,23 @@ pub(super) fn replace_with_hard_link(source: &Path, destination: &Path) -> KeyRe
     result
 }
 
+/// Whether two paths name the same file, hard links included.
+///
+/// Unix answers with the device/inode pair. Windows has no stable equivalent
+/// in `std`, so the same question goes to the file-handle API through
+/// `same-file`; a path that cannot be inspected simply is not the same file.
 #[cfg(unix)]
-pub(super) fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+pub(super) fn same_file(left: &Path, right: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    left.dev() == right.dev() && left.ino() == right.ino()
+    match (fs::metadata(left), fs::metadata(right)) {
+        (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn same_file(left: &Path, right: &Path) -> bool {
+    same_file::is_same_file(left, right).unwrap_or(false)
 }
 
 pub(super) fn sync_directory_key(path: &Path) -> KeyResult<()> {
@@ -108,17 +117,17 @@ impl KeyStore {
         operation: impl FnOnce(&Self) -> KeyResult<T>,
     ) -> KeyResult<T> {
         let path = self.root.join("keys.lock");
-        let lock = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|source| KeyError::Io {
-                path: path.clone(),
-                source,
-            })?;
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock = options.open(&path).map_err(|source| KeyError::Io {
+            path: path.clone(),
+            source,
+        })?;
         lock.lock_exclusive().map_err(|source| KeyError::Io {
             path: path.clone(),
             source,

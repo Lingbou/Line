@@ -51,6 +51,30 @@ smoke-tested automatically, rather than a build step CI can drive on its own.
 The macOS artifact is built by compiling both Apple targets on a macOS runner
 and merging them with `lipo`, so one download runs on Intel and Apple Silicon.
 
+## Windows
+
+Windows runs the same binary shape as the other platforms and uses the OpenSSH
+client that ships as an optional Windows feature. The platform seam answers
+its questions like this:
+
+- Config root: `%USERPROFILE%\.line`, still overridable with `LINE_CONFIG_DIR`.
+- OpenSSH: `ssh.exe` and `ssh-keygen.exe` from `PATH`.
+- System policy: `%ProgramData%\ssh\ssh_config` when it exists, otherwise the
+  `NUL` device. The user's own `%USERPROFILE%\.ssh\config` still cannot
+  redefine what a saved profile means.
+- File modes: Windows has no POSIX mode bits. Line does not pretend to tighten
+  anything there and relies on the ACL of the user profile directory.
+- Signals: Windows reports exit codes rather than signals and delivers console
+  control events instead. Ctrl-C, Ctrl-Break, and console close set the
+  shutdown flag; terminal restoration runs off that flag and the `Drop` guard
+  rather than off a POSIX handler.
+- Child cleanup: `taskkill /P <pid> /T /F` walks the process tree the way the
+  Unix collectors do.
+
+Saved passwords need `SSH_ASKPASS`, which Windows OpenSSH does not implement,
+so a password profile is refused on Windows with an actionable message instead
+of being launched into an interactive prompt Line cannot answer.
+
 AUR and `.apk` packaging are follow-ups, not v0.2 deliverables. Revisit the AUR
 when a maintainer owns the AUR repository and the PKGBUILD can be smoke-tested
 automatically. Revisit a native `.apk` when automated builds of a signed

@@ -88,6 +88,11 @@ pub enum SshError {
     #[error("invalid SSH profile: {0}")]
     InvalidProfile(#[from] ValidationError),
 
+    #[error(
+        "saved passwords need OpenSSH's SSH_ASKPASS helper, which is unavailable on Windows; use a key for this connection"
+    )]
+    SavedPasswordsUnsupported,
+
     #[error("could not read saved connections while resolving jump hops: {0}")]
     JumpProfiles(#[source] crate::config::ConfigError),
 
@@ -167,11 +172,16 @@ fn host_token_char(character: char) -> bool {
 
 #[cfg(test)]
 pub(super) mod test_support {
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
+    #[cfg(unix)]
     use tempfile::TempDir;
 
     use crate::config::{AuthMethod, Profile};
@@ -188,6 +198,7 @@ pub(super) mod test_support {
         }
     }
 
+    #[cfg(unix)]
     pub(super) fn fake_ssh(dir: &TempDir, record: &Path, body: &str) -> PathBuf {
         fake_program(
             dir,
@@ -196,6 +207,8 @@ pub(super) mod test_support {
         )
     }
 
+    /// A fake OpenSSH built from a POSIX shell script.
+    #[cfg(unix)]
     pub(super) fn fake_program(dir: &TempDir, name: &str, body: &str) -> PathBuf {
         let path = dir.path().join(name);
         let script = format!("#!/bin/sh\n{body}\n");

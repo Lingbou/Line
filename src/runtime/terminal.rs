@@ -1,3 +1,5 @@
+#[cfg(not(unix))]
+use std::time::Duration;
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
@@ -131,6 +133,13 @@ impl Drop for TuiSession {
     }
 }
 
+/// Wait until the user has typed something, the shutdown flag is set, or the
+/// terminal goes away.
+///
+/// Unix watches the stdin file descriptor; Windows has no `poll`, so it asks
+/// the console for input events instead. Both paths check the shutdown flag
+/// every 250 ms so a SIGTERM/console-close never strands this wait.
+#[cfg(unix)]
 pub(super) fn wait_for_terminal_line(shutdown: &AtomicBool) -> io::Result<()> {
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -160,6 +169,21 @@ pub(super) fn wait_for_terminal_line(shutdown: &AtomicBool) -> io::Result<()> {
             if error.kind() != io::ErrorKind::Interrupted {
                 return Err(error);
             }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(super) fn wait_for_terminal_line(shutdown: &AtomicBool) -> io::Result<()> {
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Line was asked to shut down",
+            ));
+        }
+        if crossterm::event::poll(Duration::from_millis(250))? {
+            return Ok(());
         }
     }
 }

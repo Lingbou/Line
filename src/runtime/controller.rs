@@ -26,6 +26,25 @@ use super::{
     terminal::TuiSession,
 };
 
+/// Signals that mean "put the terminal back and exit".
+///
+/// Windows delivers console control events: Ctrl-C as SIGINT, Ctrl-Break as
+/// SIGBREAK, and window close or logoff as SIGTERM. It has no SIGHUP/SIGQUIT.
+#[cfg(unix)]
+const SHUTDOWN_SIGNALS: &[i32] = &[
+    signal_hook::consts::SIGTERM,
+    signal_hook::consts::SIGHUP,
+    signal_hook::consts::SIGINT,
+    signal_hook::consts::SIGQUIT,
+];
+
+#[cfg(windows)]
+const SHUTDOWN_SIGNALS: &[i32] = &[
+    signal_hook::consts::SIGTERM,
+    signal_hook::consts::SIGINT,
+    signal_hook::consts::SIGBREAK,
+];
+
 pub(crate) fn run() -> Result<(), DynError> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("line needs an interactive terminal".into());
@@ -35,13 +54,8 @@ pub(crate) fn run() -> Result<(), DynError> {
     let profiles = load_with_recovery(&store, None)?;
     let runner = SshRunner::new(store.root())?;
     let shutdown = Arc::new(AtomicBool::new(false));
-    for signal in [
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGHUP,
-        signal_hook::consts::SIGINT,
-        signal_hook::consts::SIGQUIT,
-    ] {
-        signal_hook::flag::register(signal, Arc::clone(&shutdown))?;
+    for signal in SHUTDOWN_SIGNALS {
+        signal_hook::flag::register(*signal, Arc::clone(&shutdown))?;
     }
     let mut app = App::new(profiles.profiles);
     refresh_key_choices(&store, &mut app)?;

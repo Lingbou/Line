@@ -76,9 +76,7 @@ impl KeyStore {
     ) -> KeyResult<bool> {
         let left = self.resolve(left.as_ref())?;
         let right = self.resolve(right.as_ref())?;
-        if let (Ok(left_metadata), Ok(right_metadata)) = (fs::metadata(&left), fs::metadata(&right))
-            && same_file(&left_metadata, &right_metadata)
-        {
+        if same_file(&left, &right) {
             return Ok(true);
         }
         let left_private = fs::read(&left).map_err(|source| KeyError::Io {

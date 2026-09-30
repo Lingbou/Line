@@ -393,3 +393,16 @@ mod explicit_key_import {
         assert_eq!(store.key_store().list().unwrap().len(), 1);
     }
 }
+
+#[test]
+fn waiting_for_confirmation_stops_when_shutdown_is_requested() {
+    use std::sync::atomic::AtomicBool;
+
+    use super::terminal::wait_for_terminal_line;
+
+    let shutdown = AtomicBool::new(true);
+    let error = wait_for_terminal_line(&shutdown)
+        .expect_err("a requested shutdown must not block on terminal input");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+}

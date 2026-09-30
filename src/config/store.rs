@@ -1,6 +1,5 @@
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -253,17 +252,17 @@ impl ConfigStore {
     {
         self.ensure_layout()?;
         let path = self.lock_path();
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|source| ConfigError::Lock {
-                path: path.clone(),
-                source,
-            })?;
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock = options.open(&path).map_err(|source| ConfigError::Lock {
+            path: path.clone(),
+            source,
+        })?;
         set_mode(&path, 0o600)?;
         lock.lock_exclusive().map_err(|source| ConfigError::Lock {
             path: path.clone(),

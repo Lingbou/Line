@@ -49,6 +49,7 @@ impl SshRunner {
     /// Inject process paths without exposing test plumbing as production API.
     #[cfg(test)]
     #[must_use]
+    #[cfg(unix)]
     pub(super) fn for_test(
         line_dir: impl Into<PathBuf>,
         ssh_program: impl Into<PathBuf>,
@@ -88,6 +89,11 @@ impl SshRunner {
         cancel: Option<&AtomicBool>,
     ) -> Result<SessionResult, SshError> {
         profile.validate()?;
+        if matches!(profile.auth, AuthMethod::Password { .. })
+            && !platform::current().supports_saved_passwords()
+        {
+            return Err(SshError::SavedPasswordsUnsupported);
+        }
         if self.probe_version && matches!(profile.auth, AuthMethod::Password { .. }) {
             ensure_supported_openssh(&self.ssh_program)?;
         }
@@ -519,17 +525,41 @@ fn parse_openssh_version(text: &str) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
+    #[cfg(unix)]
     use tempfile::TempDir;
 
+    #[cfg(unix)]
     use crate::config::AuthMethod;
 
+    #[cfg(unix)]
     use super::super::test_support::{fake_ssh, profile};
+    #[cfg(unix)]
     use super::super::{STDERR_TAIL_LIMIT, SshError};
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_saved_passwords_before_spawning_ssh() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let runner = SshRunner::new(dir.path().join("line")).expect("runner");
+        let error = runner
+            .connect(&super::super::test_support::profile(AuthMethod::Password {
+                password: "secret".into(),
+            }))
+            .expect_err("saved passwords are unsupported on Windows");
+
+        assert!(
+            matches!(error, SshError::SavedPasswordsUnsupported),
+            "{error:?}"
+        );
+    }
 
     #[test]
     fn parses_supported_openssh_versions() {
@@ -541,6 +571,7 @@ mod tests {
         assert_eq!(parse_openssh_version("not openssh"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn old_openssh_is_allowed_for_keys_but_rejected_for_saved_passwords() {
         let dir = TempDir::new().expect("temp dir");
@@ -579,6 +610,7 @@ mod tests {
         assert!(matches!(error, SshError::UnsupportedVersion(version) if version == "8.3"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn single_jump_chain_is_passed_to_openssh() {
         let dir = TempDir::new().expect("temp dir");
@@ -614,6 +646,7 @@ mod tests {
         }));
     }
 
+    #[cfg(unix)]
     #[test]
     fn multi_hop_chain_nests_each_hop_into_the_proxy_command() {
         let dir = TempDir::new().expect("temp dir");
@@ -662,6 +695,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn profile_backed_hop_uses_the_referenced_endpoint_and_key() {
         let dir = TempDir::new().expect("temp dir");
@@ -720,6 +754,7 @@ mod tests {
         assert!(proxy.starts_with("ProxyCommand='"), "{proxy}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn profile_backed_hop_without_a_saved_profile_is_reported() {
         let dir = TempDir::new().expect("temp dir");
@@ -748,6 +783,7 @@ mod tests {
         assert!(!record.exists(), "ssh must not run with a stale reference");
     }
 
+    #[cfg(unix)]
     #[test]
     fn password_backed_jump_profile_is_rejected() {
         let dir = TempDir::new().expect("temp dir");
@@ -788,6 +824,7 @@ mod tests {
         assert!(error.to_string().contains("must authenticate with a key"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_connection_cannot_use_itself_as_a_jump_host() {
         let dir = TempDir::new().expect("temp dir");
@@ -814,6 +851,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn key_profile_uses_isolated_openssh_options_and_returns_status() {
         let dir = TempDir::new().expect("temp dir");
@@ -874,6 +912,7 @@ mod tests {
         assert_eq!(args.last().copied(), Some("alice@example.com"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn connection_uses_message_locale_without_forwarding_lc_all() {
         let dir = TempDir::new().expect("temp dir");
@@ -903,6 +942,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn routine_first_connect_notice_is_suppressed_without_losing_errors() {
         let dir = TempDir::new().expect("temp dir");
@@ -947,6 +987,7 @@ mod tests {
         assert!(super::super::is_host_key_changed(&result));
     }
 
+    #[cfg(unix)]
     #[test]
     fn password_profile_uses_forced_askpass_without_secret_in_arguments() {
         let dir = TempDir::new().expect("temp dir");
@@ -997,6 +1038,7 @@ mod tests {
         assert_eq!(pass, secret);
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_result_retains_only_the_final_sixteen_kibibytes_of_diagnostics() {
         let dir = TempDir::new().expect("temp dir");
@@ -1025,6 +1067,8 @@ mod tests {
         assert_eq!(result.exit_code, Some(255));
     }
 
+    #[cfg(unix)]
+    #[cfg(unix)]
     #[test]
     fn interrupt_signal_is_classified_for_terminal_restoration() {
         let dir = TempDir::new().expect("temp dir");
@@ -1042,6 +1086,7 @@ mod tests {
         assert!(result.interrupted());
     }
 
+    #[cfg(unix)]
     #[test]
     fn signal_termination_is_returned_instead_of_becoming_a_runner_error() {
         let dir = TempDir::new().expect("temp dir");
@@ -1060,6 +1105,7 @@ mod tests {
         assert!(!result.success());
     }
 
+    #[cfg(unix)]
     #[test]
     fn connection_prepares_private_line_and_known_hosts_permissions() {
         let dir = TempDir::new().expect("temp dir");
@@ -1074,20 +1120,30 @@ mod tests {
             }))
             .expect("ssh invocation");
 
-        let directory_mode = fs::metadata(&line_dir)
-            .expect("line directory")
-            .permissions()
-            .mode()
-            & 0o777;
-        let known_hosts_mode = fs::metadata(line_dir.join("known_hosts"))
-            .expect("known_hosts")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(directory_mode, 0o700);
-        assert_eq!(known_hosts_mode, 0o600);
+        #[cfg(unix)]
+        {
+            let directory_mode = fs::metadata(&line_dir)
+                .expect("line directory")
+                .permissions()
+                .mode()
+                & 0o777;
+            let known_hosts_mode = fs::metadata(line_dir.join("known_hosts"))
+                .expect("known_hosts")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(directory_mode, 0o700);
+            assert_eq!(known_hosts_mode, 0o600);
+        }
+        #[cfg(windows)]
+        {
+            // Windows has no POSIX mode bits; the files must merely exist.
+            assert!(line_dir.is_dir());
+            assert!(line_dir.join("known_hosts").exists());
+        }
     }
 
+    #[cfg(unix)]
     #[test]
     fn bracketed_ipv6_input_is_passed_to_openssh_as_a_bare_literal() {
         let dir = TempDir::new().expect("temp dir");

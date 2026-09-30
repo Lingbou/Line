@@ -53,14 +53,14 @@ impl KeyStore {
         let canonical = self.canonicalize_pair_locked(private_key, None)?;
         let pair = self.resolve(&canonical.private_key)?;
         let public = self.resolve(&canonical.public_key)?;
-        let private_metadata = fs::metadata(&pair).map_err(|source| KeyError::Io {
-            path: pair.clone(),
-            source,
-        })?;
-        let public_metadata = fs::metadata(&public).map_err(|source| KeyError::Io {
-            path: public.clone(),
-            source,
-        })?;
+        // Both canonical paths are the identity used by the usage check and by
+        // the hard-link mirror cleanup below.
+        if !pair.exists() {
+            return Err(KeyError::Io {
+                path: pair.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "key is missing"),
+            });
+        }
         let uses = profiles
             .profiles
             .iter()
@@ -72,17 +72,16 @@ impl KeyStore {
                 } => [private_key, public_key].into_iter().any(|relative| {
                     self.resolve(relative)
                         .ok()
-                        .and_then(|path| fs::metadata(path).ok())
-                        .is_some_and(|metadata| {
-                            same_file(&metadata, &private_metadata)
-                                || same_file(&metadata, &public_metadata)
-                        })
+                        .is_some_and(|path| same_file(&path, &pair) || same_file(&path, &public))
                 }),
             })
             .count();
         if uses > 0 {
             return Err(KeyError::InUse(uses));
         }
+        // Mirrors are identified by comparing paths, so they have to be
+        // collected while the canonical files still exist.
+        self.remove_hard_link_mirrors_locked(&pair, &public)?;
         fs::remove_file(&pair).map_err(|source| KeyError::Io {
             path: pair.clone(),
             source,
@@ -93,7 +92,6 @@ impl KeyStore {
                 source,
             })?;
         }
-        self.remove_hard_link_mirrors_locked(&private_metadata, &public_metadata)?;
         sync_directory_key(&self.keys_dir())?;
         Ok(())
     }
@@ -171,8 +169,8 @@ impl KeyStore {
 
     fn remove_hard_link_mirrors_locked(
         &self,
-        private_metadata: &fs::Metadata,
-        public_metadata: &fs::Metadata,
+        private_path: &Path,
+        public_path: &Path,
     ) -> KeyResult<()> {
         let keys_dir = self.keys_dir();
         for entry in fs::read_dir(&keys_dir).map_err(|source| KeyError::Io {
@@ -188,10 +186,7 @@ impl KeyStore {
                 continue;
             }
             for path in [directory.join("key"), directory.join("key.pub")] {
-                let Ok(metadata) = fs::metadata(&path) else {
-                    continue;
-                };
-                if same_file(&metadata, private_metadata) || same_file(&metadata, public_metadata) {
+                if same_file(&path, private_path) || same_file(&path, public_path) {
                     fs::remove_file(&path).map_err(|source| KeyError::Io {
                         path: path.clone(),
                         source,

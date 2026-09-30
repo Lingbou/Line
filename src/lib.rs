@@ -36,5 +36,5 @@ pub mod ui;
 mod platform;
 mod private_fs;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-compile_error!("Line currently supports Linux and macOS");
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+compile_error!("Line currently supports Linux, macOS, and Windows");

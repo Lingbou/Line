@@ -29,6 +29,11 @@ unicode-segmentation = "1"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 
+[target.'cfg(windows)'.dependencies]
+# Hard-link identity through the Windows file-handle API. The crate is not in
+# the Linux or macOS dependency graph.
+same-file = "1"
+
 [dev-dependencies]
 tempfile = "3"
 
