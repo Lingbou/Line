@@ -98,12 +98,26 @@ jobs:
       - name: Install packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev rpm musl-tools
+          sudo apt-get install -y binutils dpkg-dev rpm musl-tools
           cargo install cargo-deb --locked
           cargo install cargo-generate-rpm --locked
 
       - name: Build static release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Assert the binary is self-contained
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/line"
+          if readelf -l "$BIN" | grep -q 'INTERP'; then
+            echo "release binary carries a dynamic interpreter" >&2
+            exit 1
+          fi
+          if readelf -d "$BIN" 2> /dev/null | grep -q 'NEEDED'; then
+            echo "release binary depends on shared libraries" >&2
+            readelf -d "$BIN" >&2
+            exit 1
+          fi
 
       - name: Smoke test the binary
         run: |
@@ -143,14 +157,6 @@ jobs:
           VERSION="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "line") | .version')"
           bash packaging/make-tarball.sh "$VERSION" "${{ matrix.target }}" package-smoke
 
-      - name: Install the Debian package and run it
-        run: |
-          set -euo pipefail
-          DEB="$(find package-smoke -maxdepth 1 -name '*.deb' -print -quit)"
-          sudo dpkg -i "$DEB"
-          line --version
-          sudo dpkg -r line
-
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
@@ -158,116 +164,46 @@ jobs:
           path: package-smoke/*
           if-no-files-found: error
 
-  deb-install:
-    name: Debian/Ubuntu ARM64 install (${{ matrix.image }})
+  package-install:
+    name: Package install (${{ matrix.image }})
     needs: package
     strategy:
       fail-fast: false
       matrix:
-        image:
-          - debian:bookworm-slim
-          - ubuntu:24.04
+        include:
+          - image: debian:bookworm-slim
+            family: deb
+          - image: ubuntu:24.04
+            family: deb
+          - image: fedora:latest
+            family: rpm
+          - image: rockylinux:9
+            family: rpm
     runs-on: ubuntu-24.04-arm
     steps:
-      - name: Download the ARM64 Debian package
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the ARM64 packages
         uses: actions/download-artifact@v4
         with:
           name: packages-aarch64-unknown-linux-musl
           path: pkg
 
-      - name: Write the in-container install script
-        run: |
-          cat > install-smoke.sh <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends /tmp/line.deb > /dev/null
-
-          # The declared dependency must have pulled in the OpenSSH client.
-          dpkg -s openssh-client > /dev/null
-
-          # The static build must not depend on the image glibc.
-          LDD_OUTPUT="$(ldd /usr/bin/line 2>&1 || true)"
-          if ! printf '%s\n' "$LDD_OUTPUT" | grep -Eq 'statically linked|not a dynamic executable'; then
-            echo "ARM64 package unexpectedly links against the system libc" >&2
-            printf '%s\n' "$LDD_OUTPUT" >&2
-            exit 1
-          fi
-
-          line --version | grep -Eq '^line [0-9]+\.[0-9]+\.[0-9]+'
-          SCRIPT
-          cat install-smoke.sh
-
       - name: Install and run the package in ${{ matrix.image }}
         run: |
           set -euo pipefail
-          DEB="$(find pkg -maxdepth 1 -name '*.deb' -print -quit)"
-          test -n "$DEB"
+          case "${{ matrix.family }}" in
+            deb) package="$(find pkg -maxdepth 1 -name '*.deb' -print -quit)" ;;
+            rpm) package="$(find pkg -maxdepth 1 -name '*.rpm' -print -quit)" ;;
+          esac
+          test -n "$package"
+          package_path="/tmp/$(basename "$package")"
           docker run --rm \
-            -v "$PWD/${DEB}:/tmp/line.deb:ro" \
-            -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
+            -v "$PWD/$package:$package_path:ro" \
+            -v "$PWD/packaging/smoke:/tmp/smoke:ro" \
             "${{ matrix.image }}" \
-            bash /tmp/install-smoke.sh
-
-  rpm-install:
-    name: Fedora/RHEL ARM64 install (${{ matrix.image }})
-    needs: package
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - fedora:latest
-          - rockylinux:9
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Download the ARM64 RPM package
-        uses: actions/download-artifact@v4
-        with:
-          name: packages-aarch64-unknown-linux-musl
-          path: pkg
-
-      - name: Write the in-container install script
-        run: |
-          cat > install-smoke.sh <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          dnf install -y /tmp/line.rpm
-
-          # The declared dependency must have pulled in the OpenSSH client.
-          rpm -q openssh-clients > /dev/null
-
-          # The static binary must not require any glibc symbol version.
-          if rpm -q --requires line | grep -q 'GLIBC_'; then
-            echo "package requires a GLIBC symbol version" >&2
-            rpm -q --requires line >&2
-            exit 1
-          fi
-
-          # The static build must not depend on the image libc.
-          LDD_OUTPUT="$(ldd /usr/bin/line 2>&1 || true)"
-          if ! printf '%s\n' "$LDD_OUTPUT" | grep -Eq 'statically linked|not a dynamic executable'; then
-            echo "ARM64 package unexpectedly links against the system libc" >&2
-            printf '%s\n' "$LDD_OUTPUT" >&2
-            exit 1
-          fi
-
-          line --version | grep -Eq '^line [0-9]+\.[0-9]+\.[0-9]+'
-          SCRIPT
-          cat install-smoke.sh
-
-      - name: Install and run the package in ${{ matrix.image }}
-        run: |
-          set -euo pipefail
-          RPM="$(find pkg -maxdepth 1 -name '*.rpm' -print -quit)"
-          test -n "$RPM"
-          docker run --rm \
-            -v "$PWD/${RPM}:/tmp/line.rpm:ro" \
-            -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
-            "${{ matrix.image }}" \
-            bash /tmp/install-smoke.sh
+            sh "/tmp/smoke/install-${{ matrix.family }}.sh" "$package_path"
 
   static-distro-install:
     name: Static tarball on ${{ matrix.image }}
@@ -275,45 +211,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: alpine:latest
-            openssh: apk add --no-cache openssh-client openssh-keygen
-          - image: archlinux:latest
-            openssh: pacman -Sy --noconfirm --needed openssh
+        image:
+          - alpine:latest
+          - archlinux:latest
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download the static tarball
         uses: actions/download-artifact@v4
         with:
           name: packages-x86_64-unknown-linux-musl
           path: pkg
 
-      - name: Write the in-container install script
-        run: |
-          cat > install-smoke.sh <<'SCRIPT'
-          #!/bin/sh
-          set -eu
-
-          # The distributions that ship no package for Line still provide the
-          # OpenSSH programs Line drives.
-          ${{ matrix.openssh }}
-
-          mkdir -p /opt/line
-          tar -xzf /tmp/line.tar.gz -C /opt/line --strip-components=1
-          ln -sf /opt/line/line /usr/local/bin/line
-
-          line --version | grep -Eq '^line [0-9]+\.[0-9]+\.[0-9]+'
-          line --list
-          SCRIPT
-          cat install-smoke.sh
-
       - name: Install and run the tarball in ${{ matrix.image }}
         run: |
           set -euo pipefail
-          TARBALL="$(find pkg -maxdepth 1 -name '*.tar.gz' -print -quit)"
-          test -n "$TARBALL"
+          tarball="$(find pkg -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$tarball"
+          tarball_path="/tmp/$(basename "$tarball")"
           docker run --rm \
-            -v "$PWD/${TARBALL}:/tmp/line.tar.gz:ro" \
-            -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
+            -v "$PWD/$tarball:$tarball_path:ro" \
+            -v "$PWD/packaging/smoke:/tmp/smoke:ro" \
             "${{ matrix.image }}" \
-            sh /tmp/install-smoke.sh
+            sh /tmp/smoke/install-tarball.sh "$tarball_path"
