@@ -205,3 +205,61 @@ jobs:
             -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
             "${{ matrix.image }}" \
             bash /tmp/install-smoke.sh
+
+  rpm-install:
+    name: Fedora/RHEL ARM64 install (${{ matrix.image }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - fedora:latest
+          - rockylinux:9
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Download the ARM64 RPM package
+        uses: actions/download-artifact@v4
+        with:
+          name: packages-aarch64-unknown-linux-musl
+          path: pkg
+
+      - name: Write the in-container install script
+        run: |
+          cat > install-smoke.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          dnf install -y /tmp/line.rpm
+
+          # The declared dependency must have pulled in the OpenSSH client.
+          rpm -q openssh-clients > /dev/null
+
+          # The static binary must not require any glibc symbol version.
+          if rpm -q --requires line | grep -q 'GLIBC_'; then
+            echo "package requires a GLIBC symbol version" >&2
+            rpm -q --requires line >&2
+            exit 1
+          fi
+
+          # The static build must not depend on the image libc.
+          LDD_OUTPUT="$(ldd /usr/bin/line 2>&1 || true)"
+          if ! printf '%s\n' "$LDD_OUTPUT" | grep -Eq 'statically linked|not a dynamic executable'; then
+            echo "ARM64 package unexpectedly links against the system libc" >&2
+            printf '%s\n' "$LDD_OUTPUT" >&2
+            exit 1
+          fi
+
+          line --version | grep -Eq '^line [0-9]+\.[0-9]+\.[0-9]+'
+          SCRIPT
+          cat install-smoke.sh
+
+      - name: Install and run the package in ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          RPM="$(find pkg -maxdepth 1 -name '*.rpm' -print -quit)"
+          test -n "$RPM"
+          docker run --rm \
+            -v "$PWD/${RPM}:/tmp/line.rpm:ro" \
+            -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
+            "${{ matrix.image }}" \
+            bash /tmp/install-smoke.sh
