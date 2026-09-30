@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use fs2::FileExt;
 
 use crate::config::Profile;
+use crate::platform;
 
 use super::process::{bounded_lossy, exit_status_parts, prepare_line_directory};
 use super::{SessionResult, SshError, SshRunner};
@@ -47,17 +48,7 @@ impl SshRunner {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                keygen.pre_exec(|| {
-                    libc::signal(libc::SIGINT, libc::SIG_DFL);
-                    libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-                    Ok(())
-                });
-            }
-        }
+        platform::current().reset_child_signals(&mut keygen);
         let child = {
             let mut attempts = 0;
             loop {

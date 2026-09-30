@@ -1,4 +1,4 @@
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ExitStatus};
@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use crate::config::Profile;
+use crate::platform;
 use crate::private_fs;
 
 use super::{STDERR_TAIL_LIMIT, SessionResult, SshError};
@@ -111,7 +112,7 @@ pub(super) fn wait_for_child(
         let mut cancelled = false;
         loop {
             if cancel.load(Ordering::Relaxed) && !cancelled {
-                terminate_child_tree(child);
+                platform::current().terminate_child_tree(child);
                 cancelled = true;
             }
             match child.try_wait().map_err(SshError::Wait)? {
@@ -124,44 +125,6 @@ pub(super) fn wait_for_child(
         .wait()
         .map(|status| (status, false))
         .map_err(SshError::Wait)
-}
-
-#[cfg(target_os = "linux")]
-fn terminate_child_tree(child: &mut Child) {
-    let root = child.id() as i32;
-    let mut descendants = Vec::new();
-    collect_linux_descendants(root, &mut descendants);
-    // Stop the root first so it cannot create more descendants, then tear down
-    // the already-discovered ProxyCommand/wrapper tree from leaves upward.
-    unsafe {
-        libc::kill(root, libc::SIGKILL);
-        for pid in descendants.into_iter().rev() {
-            libc::kill(pid, libc::SIGKILL);
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn collect_linux_descendants(parent: i32, descendants: &mut Vec<i32>) {
-    let path = format!("/proc/{parent}/task/{parent}/children");
-    let Ok(children) = fs::read_to_string(path) else {
-        return;
-    };
-    for child in children
-        .split_whitespace()
-        .filter_map(|value| value.parse::<i32>().ok())
-    {
-        if descendants.contains(&child) {
-            continue;
-        }
-        descendants.push(child);
-        collect_linux_descendants(child, descendants);
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn terminate_child_tree(child: &mut Child) {
-    let _ = child.kill();
 }
 
 pub(super) fn collect_stderr(reader: JoinHandle<io::Result<Vec<u8>>>) -> Result<String, SshError> {

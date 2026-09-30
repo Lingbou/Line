@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use uuid::Uuid;
 
 use crate::config::{AuthMethod, Profile};
+use crate::platform;
 
 use super::askpass::{MARKER_ENV, PASSWORD_PREFIX};
 use super::process::{
@@ -34,10 +35,11 @@ impl SshRunner {
     /// as the askpass helper.
     pub fn new(line_dir: impl Into<PathBuf>) -> Result<Self, SshError> {
         let askpass_program = std::env::current_exe().map_err(SshError::CurrentExecutable)?;
+        let platform = platform::current();
         Ok(Self {
             line_dir: line_dir.into(),
-            ssh_program: PathBuf::from("ssh"),
-            ssh_keygen_program: PathBuf::from("ssh-keygen"),
+            ssh_program: platform.ssh_program(),
+            ssh_keygen_program: platform.ssh_keygen_program(),
             askpass_program,
             probe_version: true,
             forward_stderr: true,
@@ -110,17 +112,7 @@ impl SshRunner {
         // The binary ignores terminal interrupts in the parent only while it
         // waits for SSH. Restore normal dispositions in the child after fork
         // so Ctrl-C still reaches and terminates OpenSSH as expected.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                command.pre_exec(|| {
-                    libc::signal(libc::SIGINT, libc::SIG_DFL);
-                    libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-                    Ok(())
-                });
-            }
-        }
+        platform::current().reset_child_signals(&mut command);
 
         let mut child = {
             let mut attempts = 0;
@@ -163,19 +155,20 @@ impl SshRunner {
         &self,
         profile: &Profile,
         jump: &crate::config::JumpHop,
-        system_config: &str,
+        system_config: &Path,
+        null_device: &Path,
         known_hosts: &Path,
     ) -> String {
         let mut args = vec![
             self.ssh_program.to_string_lossy().into_owned(),
             "-F".into(),
-            system_config.into(),
+            system_config.to_string_lossy().into_owned(),
             "-o".into(),
             format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"),
             "-o".into(),
             format!("UserKnownHostsFile={}", known_hosts.display()),
             "-o".into(),
-            "GlobalKnownHostsFile=/dev/null".into(),
+            format!("GlobalKnownHostsFile={}", null_device.display()),
             "-o".into(),
             "StrictHostKeyChecking=accept-new".into(),
             "-o".into(),
@@ -242,11 +235,9 @@ impl SshRunner {
         // An explicit system config prevents ~/.ssh/config from changing what
         // a profile means while retaining Linux distribution/administrator
         // policy. The known-hosts overrides below remain Line-owned.
-        let system_config = if Path::new("/etc/ssh/ssh_config").is_file() {
-            "/etc/ssh/ssh_config"
-        } else {
-            "/dev/null"
-        };
+        let platform = platform::current();
+        let system_config = platform.system_ssh_config();
+        let null_device = platform.null_device();
         command
             // Keep local OpenSSH diagnostics stable for post-session error
             // classification. LC_MESSAGES is much narrower than LC_ALL, so if
@@ -257,13 +248,13 @@ impl SshRunner {
             .env("LC_MESSAGES", "C")
             .env("LANGUAGE", "C")
             .arg("-F")
-            .arg(system_config)
+            .arg(&system_config)
             .arg("-o")
             .arg(format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"))
             .arg("-o")
             .arg(format!("UserKnownHostsFile={}", known_hosts.display()))
             .arg("-o")
-            .arg("GlobalKnownHostsFile=/dev/null")
+            .arg(format!("GlobalKnownHostsFile={}", null_device.display()))
             .arg("-o")
             .arg("StrictHostKeyChecking=accept-new")
             .arg("-o")
@@ -281,7 +272,7 @@ impl SshRunner {
         if let Some(jump) = profile.jump_chain.first() {
             command.arg("-o").arg(format!(
                 "ProxyCommand={}",
-                self.proxy_command(profile, jump, system_config, &known_hosts)
+                self.proxy_command(profile, jump, &system_config, &null_device, &known_hosts)
             ));
         }
 
@@ -363,17 +354,7 @@ fn shell_quote(value: &str) -> String {
 fn ensure_supported_openssh(program: &Path) -> Result<(), SshError> {
     let mut probe = Command::new(program);
     probe.arg("-V");
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            probe.pre_exec(|| {
-                libc::signal(libc::SIGINT, libc::SIG_DFL);
-                libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-                Ok(())
-            });
-        }
-    }
+    platform::current().reset_child_signals(&mut probe);
     let output = probe.output().map_err(SshError::VersionProbe)?;
     let text = format!(
         "{}{}",

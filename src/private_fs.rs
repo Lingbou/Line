@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
@@ -9,7 +9,7 @@ pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn set_private_mode(path: &Path, mode: u32) -> io::Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+    crate::platform::current().set_private_mode(path, mode)
 }
 
 pub(crate) fn write_new_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {

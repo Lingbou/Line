@@ -33,6 +33,7 @@ pub mod config;
 pub mod ssh;
 pub mod ui;
 
+mod platform;
 mod private_fs;
 
 #[cfg(not(target_os = "linux"))]

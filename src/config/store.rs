@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use thiserror::Error;
 
+use crate::platform::{self, PlatformError};
 use crate::private_fs;
 
 use super::keys::{KeyError, KeyStore};
@@ -53,11 +54,12 @@ impl ConfigStore {
     }
 
     pub fn in_home() -> Result<Self> {
-        if let Some(path) = std::env::var_os("LINE_CONFIG_DIR") {
-            return Ok(Self::at(PathBuf::from(path)));
-        }
-        let home = std::env::var_os("HOME").ok_or(ConfigError::HomeNotSet)?;
-        Ok(Self::at(PathBuf::from(home).join(".line")))
+        let root = platform::current()
+            .config_root()
+            .map_err(|error| match error {
+                PlatformError::HomeNotSet => ConfigError::HomeNotSet,
+            })?;
+        Ok(Self::at(root))
     }
 
     pub fn root(&self) -> &Path {
