@@ -127,17 +127,13 @@ mod linux {
             ));
             wait_for_port(host_port);
 
-            let mut jump_chain = vec![JumpHop {
-                username: Some("root".into()),
-                host: "127.0.0.1".into(),
-                port: host_port,
-            }];
+            let mut jump_chain = vec![JumpHop::endpoint(
+                Some("root".into()),
+                "127.0.0.1",
+                host_port,
+            )];
             for name in jump_names.iter().skip(1) {
-                jump_chain.push(JumpHop {
-                    username: Some("root".into()),
-                    host: name.clone(),
-                    port: 22,
-                });
+                jump_chain.push(JumpHop::endpoint(Some("root".into()), name.clone(), 22));
             }
 
             let line_root = temp.path().join("line");

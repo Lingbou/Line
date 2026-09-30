@@ -5,7 +5,7 @@ use std::{
 
 use line::{
     app::App,
-    config::{ConfigError, ConfigStore, Profile},
+    config::{ConfigError, ConfigStore, JumpHop, Profile, Profiles},
     ssh::{SessionResult, SshRunner, is_host_key_changed},
 };
 
@@ -81,7 +81,7 @@ pub(super) fn connect(
                 None => app.set_status("Disconnected"),
             }
         }
-        Ok(result) => app.set_error(session_failure(&profile, &result)),
+        Ok(result) => app.set_error(session_failure(store, &profile, &result)),
         Err(error) => app.set_error(error.to_string()),
     }
 
@@ -120,23 +120,26 @@ fn confirm_host_key_replacement(
     ))
 }
 
-pub(super) fn session_failure(profile: &Profile, result: &SessionResult) -> String {
+pub(super) fn session_failure(
+    store: &ConfigStore,
+    profile: &Profile,
+    result: &SessionResult,
+) -> String {
     let status = match (result.exit_code, result.signal) {
         (Some(code), _) => format!("ssh exited with code {code}"),
         (_, Some(signal)) => format!("ssh was terminated by signal {signal}"),
         _ => "ssh ended without an exit status".to_owned(),
     };
     // A chain runs one ssh per hop, so name the hop when OpenSSH blames one.
-    let status = match result.failing_jump_hop(&profile.jump_chain) {
-        Some(index) => {
-            let hop = &profile.jump_chain[index];
-            format!(
-                "{status} · jump {}/{} {} unreachable",
-                index + 1,
-                profile.jump_chain.len(),
-                hop.authority()
-            )
-        }
+    let hops = jump_hops(store, profile);
+    let hosts: Vec<String> = hops.iter().map(|hop| hop.host.clone()).collect();
+    let status = match result.failing_jump_hop(&hosts) {
+        Some(index) => format!(
+            "{status} · jump {}/{} {} unreachable",
+            index + 1,
+            hops.len(),
+            hops[index].label
+        ),
         None => status,
     };
     let diagnostics = result.stderr_tail.trim();
@@ -145,4 +148,42 @@ pub(super) fn session_failure(profile: &Profile, result: &SessionResult) -> Stri
     } else {
         format!("{status}\n\n{diagnostics}")
     }
+}
+
+/// How a jump hop should be described when a chain fails.
+///
+/// The store lookup is best effort: a chain that already failed for a missing
+/// reference still needs a readable row instead of a panic.
+struct JumpHopLabel {
+    host: String,
+    label: String,
+}
+
+fn jump_hops(store: &ConfigStore, profile: &Profile) -> Vec<JumpHopLabel> {
+    let saved: Option<Profiles> = store.load().ok();
+    profile
+        .jump_chain
+        .iter()
+        .map(|hop| match hop {
+            JumpHop::Endpoint(endpoint) => JumpHopLabel {
+                host: endpoint.host.clone(),
+                label: endpoint.authority(),
+            },
+            JumpHop::Profile(reference) => {
+                match saved
+                    .as_ref()
+                    .and_then(|profiles| profiles.by_id(&reference.profile_id))
+                {
+                    Some(referenced) => JumpHopLabel {
+                        host: referenced.host.clone(),
+                        label: format!("{} (saved connection)", referenced.name),
+                    },
+                    None => JumpHopLabel {
+                        host: String::new(),
+                        label: format!("saved connection {}", reference.profile_id),
+                    },
+                }
+            }
+        })
+        .collect()
 }

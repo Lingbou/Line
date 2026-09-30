@@ -154,11 +154,7 @@ pub(super) fn parse_jump_hop(value: &str) -> Result<JumpHop, String> {
         None => (None, value),
     };
     let (host, port) = parse_jump_host_port(host_port)?;
-    Ok(JumpHop {
-        username,
-        host,
-        port,
-    })
+    Ok(JumpHop::endpoint(username, host, port))
 }
 
 fn parse_jump_host_port(value: &str) -> Result<(String, u16), String> {

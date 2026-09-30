@@ -121,11 +121,11 @@ mod unix {
                 host: "10.77.0.2".into(),
                 port: 22,
                 username: "root".into(),
-                jump_chain: vec![JumpHop {
-                    username: Some("root".into()),
-                    host: "124.222.134.112".into(),
-                    port: 22,
-                }],
+                jump_chain: vec![JumpHop::endpoint(
+                    Some("root".into()),
+                    "124.222.134.112",
+                    22,
+                )],
                 auth: AuthMethod::Password {
                     password: "pw".into(),
                 },
@@ -138,7 +138,10 @@ mod unix {
 
         assert_eq!(loaded, profiles);
         assert_eq!(
-            loaded.profiles[0].jump_chain[0].authority(),
+            loaded.profiles[0].jump_chain[0]
+                .as_endpoint()
+                .expect("endpoint hop")
+                .authority(),
             "root@124.222.134.112"
         );
         assert!(

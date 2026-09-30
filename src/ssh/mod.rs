@@ -87,6 +87,22 @@ pub enum SshError {
 
     #[error("invalid SSH profile: {0}")]
     InvalidProfile(#[from] ValidationError),
+
+    #[error("could not read saved connections while resolving jump hops: {0}")]
+    JumpProfiles(#[source] crate::config::ConfigError),
+
+    #[error(
+        "this connection uses saved connection {profile_id} as a jump host, but that connection no longer exists; edit the chain to repair it"
+    )]
+    MissingJumpProfile { profile_id: String },
+
+    #[error("a jump host cannot reference the connection it belongs to")]
+    SelfReferentialJumpProfile,
+
+    #[error(
+        "saved connection \"{name}\" is used as a jump host but stores a password; jump hosts must authenticate with a key"
+    )]
+    PasswordJumpProfile { name: String },
 }
 
 /// The observable outcome of an SSH child process.
@@ -122,13 +138,14 @@ impl SessionResult {
     /// Index of the jump hop the OpenSSH diagnostics single out, if any.
     ///
     /// Every hop in a chain runs its own `ssh`, so a failure names the hop it
-    /// could not reach. The match is on whole host tokens to keep a short host
-    /// name from matching inside a longer address.
+    /// could not reach. Callers pass the hosts the chain resolved to, in
+    /// order. The match is on whole host tokens to keep a short host name from
+    /// matching inside a longer address.
     #[must_use]
-    pub fn failing_jump_hop(&self, chain: &[crate::config::JumpHop]) -> Option<usize> {
-        chain
+    pub fn failing_jump_hop(&self, hosts: &[String]) -> Option<usize> {
+        hosts
             .iter()
-            .position(|hop| mentions_host(&self.stderr_tail, &hop.host))
+            .position(|host| mentions_host(&self.stderr_tail, host))
     }
 }
 

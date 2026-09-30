@@ -703,22 +703,18 @@ fn host_command_with_single_jump_populates_profile_draft() {
             ..
         }) if username == "root"
             && host == "10.77.0.2"
-            && jump_chain == vec![JumpHop {
-                username: Some("root".into()),
-                host: "124.222.134.112".into(),
-                port: 22,
-            }]
+            && jump_chain == vec![JumpHop::endpoint(Some("root".into()), "124.222.134.112", 22)]
     ));
 }
 
 #[test]
 fn editing_profile_keeps_single_jump_chain() {
     let mut existing = profile("1", "one");
-    existing.jump_chain = vec![JumpHop {
-        username: Some("root".into()),
-        host: "124.222.134.112".into(),
-        port: 22,
-    }];
+    existing.jump_chain = vec![JumpHop::endpoint(
+        Some("root".into()),
+        "124.222.134.112",
+        22,
+    )];
     let mut app = App::new(vec![existing]);
     app.begin_edit();
 
@@ -726,11 +722,11 @@ fn editing_profile_keeps_single_jump_chain() {
 
     assert_eq!(
         draft.jump_chain,
-        vec![JumpHop {
-            username: Some("root".into()),
-            host: "124.222.134.112".into(),
-            port: 22,
-        }]
+        vec![JumpHop::endpoint(
+            Some("root".into()),
+            "124.222.134.112",
+            22
+        )]
     );
 }
 
@@ -753,16 +749,8 @@ fn host_command_with_multi_hop_jump_keeps_hop_order() {
             ..
         }) if host == "10.77.0.3"
             && jump_chain == vec![
-                JumpHop {
-                    username: Some("root".into()),
-                    host: "124.222.134.112".into(),
-                    port: 22,
-                },
-                JumpHop {
-                    username: Some("deploy".into()),
-                    host: "10.77.0.2".into(),
-                    port: 2222,
-                },
+                JumpHop::endpoint(Some("root".into()), "124.222.134.112", 22),
+                JumpHop::endpoint(Some("deploy".into()), "10.77.0.2", 2222),
             ]
     ));
 }
@@ -789,16 +777,8 @@ fn multi_hop_paste_rejects_an_empty_hop() {
 fn editing_profile_keeps_the_whole_multi_hop_chain() {
     let mut existing = profile("1", "one");
     existing.jump_chain = vec![
-        JumpHop {
-            username: Some("root".into()),
-            host: "124.222.134.112".into(),
-            port: 22,
-        },
-        JumpHop {
-            username: Some("deploy".into()),
-            host: "10.77.0.2".into(),
-            port: 2222,
-        },
+        JumpHop::endpoint(Some("root".into()), "124.222.134.112", 22),
+        JumpHop::endpoint(Some("deploy".into()), "10.77.0.2", 2222),
     ];
     let mut app = App::new(vec![existing]);
     app.begin_edit();
@@ -806,8 +786,11 @@ fn editing_profile_keeps_the_whole_multi_hop_chain() {
     let draft = app.form().unwrap().draft(app.profiles()).unwrap();
 
     assert_eq!(draft.jump_chain.len(), 2);
-    assert_eq!(draft.jump_chain[1].host, "10.77.0.2");
-    assert_eq!(draft.jump_chain[1].port, 2222);
+    let second = draft.jump_chain[1]
+        .as_endpoint()
+        .expect("the pasted chain stores endpoint hops");
+    assert_eq!(second.host, "10.77.0.2");
+    assert_eq!(second.port, 2222);
 }
 
 #[test]

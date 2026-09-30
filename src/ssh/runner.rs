@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 
 use uuid::Uuid;
 
-use crate::config::{AuthMethod, Profile};
+use crate::config::{AuthMethod, ConfigStore, EndpointHop, JumpHop, Profile, Profiles};
 use crate::platform;
 
 use super::askpass::{MARKER_ENV, PASSWORD_PREFIX};
@@ -98,7 +98,7 @@ impl SshRunner {
         prepare_line_directory(&self.line_dir)?;
 
         let mut command = Command::new(&self.ssh_program);
-        self.configure_command(&mut command, profile);
+        self.configure_command(&mut command, profile)?;
 
         // stdout and stdin remain attached to the terminal. `-tt` below
         // forces a remote pty, which is what lets full-screen shells/programs
@@ -167,8 +167,7 @@ impl SshRunner {
     /// `hop2` for the process that connects to it.
     fn proxy_command(
         &self,
-        profile: &Profile,
-        chain: &[crate::config::JumpHop],
+        chain: &[ResolvedHop],
         system_config: &Path,
         null_device: &Path,
         known_hosts: &Path,
@@ -176,7 +175,6 @@ impl SshRunner {
         let mut command = None;
         for hop in chain {
             command = Some(self.proxy_hop(
-                profile,
                 hop,
                 command.as_deref(),
                 system_config,
@@ -189,13 +187,13 @@ impl SshRunner {
 
     fn proxy_hop(
         &self,
-        profile: &Profile,
-        jump: &crate::config::JumpHop,
+        hop: &ResolvedHop,
         inner: Option<&str>,
         system_config: &Path,
         null_device: &Path,
         known_hosts: &Path,
     ) -> String {
+        let jump = &hop.endpoint;
         let mut args = vec![
             self.ssh_program.to_string_lossy().into_owned(),
             "-F".into(),
@@ -213,7 +211,7 @@ impl SshRunner {
             "-o".into(),
             "ConnectionAttempts=1".into(),
         ];
-        match &profile.auth {
+        match &hop.auth {
             AuthMethod::Key { private_key, .. } => {
                 args.extend([
                     "-i".into(),
@@ -285,9 +283,10 @@ impl SshRunner {
         command
     }
 
-    fn configure_command(&self, command: &mut Command, profile: &Profile) {
+    fn configure_command(&self, command: &mut Command, profile: &Profile) -> Result<(), SshError> {
         let known_hosts = self.line_dir.join("known_hosts");
         let destination = destination(profile);
+        let jump_chain = self.resolve_jump_chain(profile)?;
 
         // An explicit system config prevents ~/.ssh/config from changing what
         // a profile means while retaining Linux distribution/administrator
@@ -326,16 +325,10 @@ impl SshRunner {
             .arg("-p")
             .arg(profile.port.to_string());
 
-        if !profile.jump_chain.is_empty() {
+        if !jump_chain.is_empty() {
             command.arg("-o").arg(format!(
                 "ProxyCommand={}",
-                self.proxy_command(
-                    profile,
-                    &profile.jump_chain,
-                    &system_config,
-                    &null_device,
-                    &known_hosts
-                )
+                self.proxy_command(&jump_chain, &system_config, &null_device, &known_hosts)
             ));
         }
 
@@ -407,7 +400,69 @@ impl SshRunner {
 
         // End option parsing before accepting a host read from a JSON profile.
         command.arg("--").arg(destination);
+        Ok(())
     }
+
+    /// Resolve every hop against the saved profiles before OpenSSH runs.
+    ///
+    /// Endpoint hops keep the profile identity, which is what a pasted
+    /// `ssh -J` command does. A profile-backed hop brings its own endpoint and
+    /// key so the referenced connection means what it says. The referenced
+    /// profile's own jump chain is deliberately not expanded, so references
+    /// cannot form a cycle.
+    fn resolve_jump_chain(&self, profile: &Profile) -> Result<Vec<ResolvedHop>, SshError> {
+        let mut saved: Option<Profiles> = None;
+        let mut chain = Vec::with_capacity(profile.jump_chain.len());
+        for hop in &profile.jump_chain {
+            let reference = match hop {
+                JumpHop::Endpoint(endpoint) => {
+                    chain.push(ResolvedHop {
+                        endpoint: endpoint.clone(),
+                        auth: profile.auth.clone(),
+                    });
+                    continue;
+                }
+                JumpHop::Profile(reference) => reference,
+            };
+            if reference.profile_id == profile.id {
+                return Err(SshError::SelfReferentialJumpProfile);
+            }
+            if saved.is_none() {
+                saved = Some(
+                    ConfigStore::at(&self.line_dir)
+                        .load()
+                        .map_err(SshError::JumpProfiles)?,
+                );
+            }
+            let referenced = saved
+                .as_ref()
+                .expect("profiles are loaded above")
+                .by_id(&reference.profile_id)
+                .ok_or_else(|| SshError::MissingJumpProfile {
+                    profile_id: reference.profile_id.clone(),
+                })?;
+            if matches!(referenced.auth, AuthMethod::Password { .. }) {
+                return Err(SshError::PasswordJumpProfile {
+                    name: referenced.name.clone(),
+                });
+            }
+            chain.push(ResolvedHop {
+                endpoint: EndpointHop {
+                    username: Some(referenced.username.clone()),
+                    host: referenced.host.clone(),
+                    port: referenced.port,
+                },
+                auth: referenced.auth.clone(),
+            });
+        }
+        Ok(chain)
+    }
+}
+
+/// A jump hop after profile references are resolved.
+struct ResolvedHop {
+    endpoint: EndpointHop,
+    auth: AuthMethod,
 }
 
 fn shell_quote(value: &str) -> String {
@@ -534,11 +589,11 @@ mod tests {
             private_key: PathBuf::from("keys/Example/key"),
             public_key: PathBuf::from("keys/Example/key.pub"),
         });
-        target.jump_chain = vec![crate::config::JumpHop {
-            username: Some("root".into()),
-            host: "124.222.134.112".into(),
-            port: 22,
-        }];
+        target.jump_chain = vec![JumpHop::endpoint(
+            Some("root".into()),
+            "124.222.134.112",
+            22,
+        )];
 
         runner.connect(&target).expect("ssh invocation");
 
@@ -570,16 +625,8 @@ mod tests {
             public_key: PathBuf::from("keys/Example/key.pub"),
         });
         target.jump_chain = vec![
-            crate::config::JumpHop {
-                username: Some("root".into()),
-                host: "124.222.134.112".into(),
-                port: 2222,
-            },
-            crate::config::JumpHop {
-                username: Some("root".into()),
-                host: "10.77.0.2".into(),
-                port: 22,
-            },
+            JumpHop::endpoint(Some("root".into()), "124.222.134.112", 2222),
+            JumpHop::endpoint(Some("root".into()), "10.77.0.2", 22),
         ];
 
         runner.connect(&target).expect("ssh invocation");
@@ -600,6 +647,157 @@ mod tests {
         assert!(
             proxy.find("'root@124.222.134.112'") < proxy.find("'root@10.77.0.2'"),
             "the first hop is nested inside the second: {proxy}"
+        );
+    }
+
+    #[test]
+    fn profile_backed_hop_uses_the_referenced_endpoint_and_key() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("record");
+        let fake = fake_ssh(
+            &dir,
+            &record,
+            r#"
+            printf '%s\n' "$@" > "$RECORD"
+            exit 0
+            "#,
+        );
+        let line_dir = dir.path().join("line");
+        let store = crate::config::ConfigStore::at(&line_dir);
+        store
+            .save(&crate::config::Profiles {
+                profiles: vec![Profile {
+                    id: "bastion".into(),
+                    name: "Bastion".into(),
+                    host: "10.77.0.9".into(),
+                    port: 2200,
+                    username: "ops".into(),
+                    jump_chain: Vec::new(),
+                    auth: AuthMethod::Key {
+                        private_key: PathBuf::from("keys/Bastion/key"),
+                        public_key: PathBuf::from("keys/Bastion/key.pub"),
+                    },
+                }],
+                ..crate::config::Profiles::default()
+            })
+            .expect("save jump profile");
+
+        let runner = SshRunner::for_test(&line_dir, fake, "ssh-keygen", "/bin/false");
+        let mut target = profile(AuthMethod::Key {
+            private_key: PathBuf::from("keys/Example/key"),
+            public_key: PathBuf::from("keys/Example/key.pub"),
+        });
+        target.jump_chain = vec![crate::config::JumpHop::Profile(crate::config::ProfileHop {
+            profile_id: "bastion".into(),
+        })];
+
+        runner.connect(&target).expect("ssh invocation");
+
+        let args = fs::read_to_string(record).expect("recorded args");
+        let proxy = args
+            .lines()
+            .find(|arg| arg.starts_with("ProxyCommand="))
+            .expect("proxy command argument");
+        assert!(proxy.contains("'ops@10.77.0.9'"), "{proxy}");
+        assert!(proxy.contains("'-p' '2200'"), "{proxy}");
+        // The hop authenticates with the referenced profile's key, not the
+        // target's.
+        assert!(proxy.contains("keys/Bastion/key"), "{proxy}");
+        assert!(!proxy.contains("keys/Example/key"), "{proxy}");
+        assert!(proxy.contains("'/tmp/"), "{proxy}");
+    }
+
+    #[test]
+    fn profile_backed_hop_without_a_saved_profile_is_reported() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("record");
+        let fake = fake_ssh(&dir, &record, "exit 0");
+        let line_dir = dir.path().join("line");
+        crate::config::ConfigStore::at(&line_dir)
+            .save(&crate::config::Profiles::default())
+            .expect("save empty store");
+
+        let runner = SshRunner::for_test(&line_dir, fake, "ssh-keygen", "/bin/false");
+        let mut target = profile(AuthMethod::Key {
+            private_key: PathBuf::from("keys/Example/key"),
+            public_key: PathBuf::from("keys/Example/key.pub"),
+        });
+        target.jump_chain = vec![crate::config::JumpHop::Profile(crate::config::ProfileHop {
+            profile_id: "deleted".into(),
+        })];
+
+        let error = runner.connect(&target).expect_err("stale reference");
+        assert!(
+            matches!(&error, SshError::MissingJumpProfile { profile_id } if profile_id == "deleted"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("deleted"));
+        assert!(!record.exists(), "ssh must not run with a stale reference");
+    }
+
+    #[test]
+    fn password_backed_jump_profile_is_rejected() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("record");
+        let fake = fake_ssh(&dir, &record, "exit 0");
+        let line_dir = dir.path().join("line");
+        crate::config::ConfigStore::at(&line_dir)
+            .save(&crate::config::Profiles {
+                profiles: vec![Profile {
+                    id: "bastion".into(),
+                    name: "Bastion".into(),
+                    host: "10.77.0.9".into(),
+                    port: 22,
+                    username: "ops".into(),
+                    jump_chain: Vec::new(),
+                    auth: AuthMethod::Password {
+                        password: "secret".into(),
+                    },
+                }],
+                ..crate::config::Profiles::default()
+            })
+            .expect("save jump profile");
+
+        let runner = SshRunner::for_test(&line_dir, fake, "ssh-keygen", "/bin/false");
+        let mut target = profile(AuthMethod::Key {
+            private_key: PathBuf::from("keys/Example/key"),
+            public_key: PathBuf::from("keys/Example/key.pub"),
+        });
+        target.jump_chain = vec![crate::config::JumpHop::Profile(crate::config::ProfileHop {
+            profile_id: "bastion".into(),
+        })];
+
+        let error = runner.connect(&target).expect_err("password jump hop");
+        assert!(
+            matches!(&error, SshError::PasswordJumpProfile { name } if name == "Bastion"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("must authenticate with a key"));
+    }
+
+    #[test]
+    fn a_connection_cannot_use_itself_as_a_jump_host() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("record");
+        let fake = fake_ssh(&dir, &record, "exit 0");
+        let line_dir = dir.path().join("line");
+        crate::config::ConfigStore::at(&line_dir)
+            .save(&crate::config::Profiles::default())
+            .expect("save store");
+
+        let runner = SshRunner::for_test(&line_dir, fake, "ssh-keygen", "/bin/false");
+        let mut target = profile(AuthMethod::Key {
+            private_key: PathBuf::from("keys/Example/key"),
+            public_key: PathBuf::from("keys/Example/key.pub"),
+        });
+        target.jump_chain = vec![crate::config::JumpHop::Profile(crate::config::ProfileHop {
+            profile_id: target.id.clone(),
+        })];
+
+        let error = runner.connect(&target).expect_err("self reference");
+        assert!(
+            matches!(error, SshError::SelfReferentialJumpProfile),
+            "{error:?}"
         );
     }
 

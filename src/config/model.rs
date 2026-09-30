@@ -7,16 +7,77 @@ use thiserror::Error;
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// One intermediate SSH endpoint used before the target.
+///
+/// A hop either spells out an endpoint or points at another saved profile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JumpHop {
+    Endpoint(EndpointHop),
+    Profile(ProfileHop),
+}
+
+impl JumpHop {
+    /// Build an endpoint hop.
+    #[must_use]
+    pub fn endpoint(username: Option<String>, host: impl Into<String>, port: u16) -> Self {
+        Self::Endpoint(EndpointHop {
+            username,
+            host: host.into(),
+            port,
+        })
+    }
+
+    #[must_use]
+    pub fn as_endpoint(&self) -> Option<&EndpointHop> {
+        match self {
+            Self::Endpoint(endpoint) => Some(endpoint),
+            Self::Profile(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_profile(&self) -> Option<&ProfileHop> {
+        match self {
+            Self::Endpoint(_) => None,
+            Self::Profile(reference) => Some(reference),
+        }
+    }
+
+    fn validate(&self) -> std::result::Result<(), ValidationError> {
+        match self {
+            Self::Endpoint(endpoint) => endpoint.validate(),
+            Self::Profile(reference) => {
+                if reference.profile_id.trim().is_empty() {
+                    return Err(ValidationError::InvalidJumpChain(
+                        "jump profile reference cannot be empty".into(),
+                    ));
+                }
+                if reference
+                    .profile_id
+                    .chars()
+                    .any(|character| character.is_control())
+                {
+                    return Err(ValidationError::InvalidJumpChain(
+                        "jump profile reference cannot contain control characters".into(),
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A jump hop written out as `user@host:port`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct JumpHop {
+pub struct EndpointHop {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     pub host: String,
     pub port: u16,
 }
 
-impl JumpHop {
+impl EndpointHop {
     #[must_use]
     pub fn destination(&self) -> String {
         match &self.username {
@@ -80,6 +141,18 @@ impl JumpHop {
         }
         Ok(())
     }
+}
+
+/// A jump hop that points at another saved profile.
+///
+/// The reference is an id rather than a name so that renaming the referenced
+/// profile does not break the chain. The referenced profile contributes its
+/// endpoint and its key; its own jump chain is not expanded, so references
+/// cannot form cycles.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileHop {
+    pub profile_id: String,
 }
 
 /// A saved SSH connection.
@@ -389,4 +462,53 @@ fn validate_key_relative_path(path: &Path) -> std::result::Result<(), Validation
         return Err(ValidationError::KeyOutsideDirectory(path.to_owned()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod jump_hop_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_hops_written_before_references_still_load() {
+        let json = r#"{"username":"root","host":"10.77.0.2","port":2222}"#;
+        let hop: JumpHop = serde_json::from_str(json).expect("legacy endpoint hop");
+        let endpoint = hop.as_endpoint().expect("endpoint form");
+        assert_eq!(endpoint.username.as_deref(), Some("root"));
+        assert_eq!(endpoint.host, "10.77.0.2");
+        assert_eq!(endpoint.port, 2222);
+        assert!(hop.as_profile().is_none());
+    }
+
+    #[test]
+    fn profile_references_round_trip() {
+        let hop = JumpHop::Profile(ProfileHop {
+            profile_id: "e7f0e5d4".into(),
+        });
+        let json = serde_json::to_string(&hop).expect("serialize hop");
+        assert_eq!(json, r#"{"profile_id":"e7f0e5d4"}"#);
+        let parsed: JumpHop = serde_json::from_str(&json).expect("parse hop");
+        assert_eq!(parsed, hop);
+    }
+
+    #[test]
+    fn profile_references_reject_an_empty_id() {
+        let hop = JumpHop::Profile(ProfileHop {
+            profile_id: "  ".into(),
+        });
+        assert!(matches!(
+            hop.validate(),
+            Err(ValidationError::InvalidJumpChain(message))
+                if message == "jump profile reference cannot be empty"
+        ));
+    }
+
+    #[test]
+    fn endpoint_hops_still_reject_bad_endpoints() {
+        assert!(
+            JumpHop::endpoint(Some("root".into()), "", 22)
+                .validate()
+                .is_err()
+        );
+        assert!(JumpHop::endpoint(None, "host", 0).validate().is_err());
+    }
 }

@@ -27,4 +27,8 @@ OpenSSH expands `%h:%p` against the destination of the process whose configurati
 
 Because each hop runs its own `ssh`, a failure names the hop it could not reach. Line reads the OpenSSH diagnostics for whole host tokens, reports the first hop they single out as `jump i/n`, and leaves the raw diagnostics intact.
 
-Profile-backed hops and TUI rendering follow in dependent tickets.
+A hop may also reference another saved profile by id. Ids survive renames, so renaming a connection does not break a chain that points at it. Line resolves the reference when it connects: the referenced profile contributes its endpoint and its key, and its own jump chain is deliberately not expanded, which is what keeps references from forming cycles.
+
+A reference that no longer resolves, points at the connection itself, or points at a profile that stores a password fails before OpenSSH starts, with a message naming the offending connection. Jump hops authenticate with keys because each nested hop is a separate `ssh` process, and a saved password cannot be handed to the right process in that chain.
+
+TUI rendering follows in a dependent ticket.
