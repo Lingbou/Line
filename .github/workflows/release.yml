@@ -102,12 +102,7 @@ jobs:
       - name: Package Tarball (.tar.gz)
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          STAGE="dist/line-${TAG}-${{ matrix.target }}"
-          mkdir -p "$STAGE"
-          cp "target/${{ matrix.target }}/release/line" "$STAGE/"
-          cp README.md LICENSE "$STAGE/"
-          tar -czf "${STAGE}.tar.gz" -C dist "line-${TAG}-${{ matrix.target }}"
-          rm -rf "$STAGE"
+          bash packaging/make-tarball.sh "${TAG#v}" "${{ matrix.target }}" dist
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4

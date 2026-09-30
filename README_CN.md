@@ -55,6 +55,20 @@ sudo dnf install ./line-<version>-1.aarch64.rpm # aarch64
 
 二进制本身是静态链接的，但 Line 仍然依赖系统安装的 OpenSSH 客户端和 `ssh-keygen`。
 
+### Arch Linux 与 Alpine Linux
+
+这两个发行版直接运行静态二进制即可。先安装发行版自带的 OpenSSH 工具，再解压上面的压缩包：
+
+```bash
+# Arch Linux（openssh 同时提供 ssh 与 ssh-keygen）
+sudo pacman -S openssh
+
+# Alpine Linux（ssh-keygen 单独打包，openssh-client 会自动拉入）
+sudo apk add openssh-client openssh-keygen
+```
+
+静态构建不需要发行版的 libc 包，因此 Line 本身无需额外安装 `glibc` 或 `musl`。
+
 ### 源码编译安装
 
 依赖要求：Rust (1.88+)、系统自带的 OpenSSH 与 `ssh-keygen`。保存密码连接使用 `SSH_ASKPASS`，需要 OpenSSH 8.4 或更高版本。

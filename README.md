@@ -55,6 +55,20 @@ Extract it and move `line` to `/usr/local/bin/` or `~/.local/bin/`.
 
 The binary itself is static, but Line still invokes the system OpenSSH client and `ssh-keygen`.
 
+### Arch Linux and Alpine Linux
+
+Both distributions run the static binary directly. Install the distribution OpenSSH programs first, then unpack the tarball above:
+
+```bash
+# Arch Linux (openssh provides ssh and ssh-keygen)
+sudo pacman -S openssh
+
+# Alpine Linux (openssh-client pulls in the separately packaged ssh-keygen)
+sudo apk add openssh-client openssh-keygen
+```
+
+The static build needs no libc package from either distribution, so no `glibc` or `musl` dependency has to be installed for Line itself.
+
 ### Build from Source
 
 Prerequisites: Rust (1.88+), OpenSSH, and `ssh-keygen`. Saved-password connections use `SSH_ASKPASS` and require OpenSSH 8.4+.

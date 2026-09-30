@@ -138,6 +138,11 @@ jobs:
             exit 1
           fi
 
+      - name: Package tarball (.tar.gz)
+        run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "line") | .version')"
+          bash packaging/make-tarball.sh "$VERSION" "${{ matrix.target }}" package-smoke
+
       - name: Install the Debian package and run it
         run: |
           set -euo pipefail
@@ -263,3 +268,52 @@ jobs:
             -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
             "${{ matrix.image }}" \
             bash /tmp/install-smoke.sh
+
+  static-distro-install:
+    name: Static tarball on ${{ matrix.image }}
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: alpine:latest
+            openssh: apk add --no-cache openssh-client openssh-keygen
+          - image: archlinux:latest
+            openssh: pacman -Sy --noconfirm --needed openssh
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the static tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: packages-x86_64-unknown-linux-musl
+          path: pkg
+
+      - name: Write the in-container install script
+        run: |
+          cat > install-smoke.sh <<'SCRIPT'
+          #!/bin/sh
+          set -eu
+
+          # The distributions that ship no package for Line still provide the
+          # OpenSSH programs Line drives.
+          ${{ matrix.openssh }}
+
+          mkdir -p /opt/line
+          tar -xzf /tmp/line.tar.gz -C /opt/line --strip-components=1
+          ln -sf /opt/line/line /usr/local/bin/line
+
+          line --version | grep -Eq '^line [0-9]+\.[0-9]+\.[0-9]+'
+          line --list
+          SCRIPT
+          cat install-smoke.sh
+
+      - name: Install and run the tarball in ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          TARBALL="$(find pkg -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$TARBALL"
+          docker run --rm \
+            -v "$PWD/${TARBALL}:/tmp/line.tar.gz:ro" \
+            -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
+            "${{ matrix.image }}" \
+            sh /tmp/install-smoke.sh
