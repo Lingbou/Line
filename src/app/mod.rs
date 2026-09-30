@@ -17,8 +17,8 @@ pub use form::FormState;
 pub use mouse::{MouseRegions, MouseTarget};
 pub use state::App;
 pub use types::{
-    AppAction, AuthDraft, DEFAULT_PORT, FormField, KeyChoice, KeySource, ProfileDraft, SaveMode,
-    Screen,
+    AppAction, AuthDraft, DEFAULT_PORT, FormField, JumpChoice, KeyChoice, KeySource, ProfileDraft,
+    SaveMode, Screen,
 };
 
 #[cfg(test)]

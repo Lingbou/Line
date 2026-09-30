@@ -134,12 +134,24 @@ pub enum FormField {
     Host,
     Port,
     Username,
+    Jump,
     Authentication,
     Password,
     ShowPassword,
     KeySource,
     KeyValue,
     PublicKey,
+}
+
+/// What the form's jump field selects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JumpChoice {
+    /// No jump host.
+    Direct,
+    /// Use another saved profile as the only hop.
+    Profile(String),
+    /// Keep the chain pasted into the Host field, or the one already saved.
+    Custom,
 }
 
 impl FormField {

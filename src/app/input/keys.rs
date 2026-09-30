@@ -31,6 +31,13 @@ impl App {
         }
     }
 
+    pub(super) fn cycle_jump(&mut self, delta: i32) {
+        let profiles = self.profiles.clone();
+        if let Some(form) = self.form.as_mut() {
+            form.jump.cycle(&profiles, delta);
+        }
+    }
+
     pub(crate) fn ensure_existing_key_selected(&mut self) {
         let first = self.available_keys.first().cloned();
         let Some(form) = self.form.as_mut() else {

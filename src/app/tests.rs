@@ -4,7 +4,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::config::{AuthMethod, JumpHop, Profile};
+use crate::config::{AuthMethod, JumpHop, Profile, ProfileHop};
 
 use super::*;
 
@@ -770,6 +770,145 @@ fn multi_hop_paste_rejects_an_empty_hop() {
     assert_eq!(
         app.form().unwrap().validation_error.as_deref(),
         Some("Jump chain contains an empty hop")
+    );
+}
+
+#[test]
+fn jump_selector_cycles_through_direct_saved_profiles_and_custom() {
+    let mut app = App::new(vec![profile("1", "Bastion"), profile("2", "Edge")]);
+    app.begin_add();
+    let form = app.form_mut().unwrap();
+    form.field = FormField::Jump;
+
+    let mut seen = vec![format!("{:?}", form.jump.clone())];
+    for _ in 0..3 {
+        app.handle_key(key(KeyCode::Right, KeyModifiers::NONE));
+        seen.push(format!("{:?}", app.form().unwrap().jump.clone()));
+    }
+
+    assert_eq!(
+        seen,
+        vec![
+            "Direct".to_owned(),
+            r#"Profile("1")"#.to_owned(),
+            r#"Profile("2")"#.to_owned(),
+            "Custom".to_owned(),
+        ]
+    );
+
+    app.handle_key(key(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.form().unwrap().jump, JumpChoice::Profile("2".into()));
+}
+
+#[test]
+fn choosing_a_saved_profile_saves_it_as_the_only_hop() {
+    let mut app = App::new(vec![profile("1", "Bastion")]);
+    app.begin_add();
+    {
+        let form = app.form_mut().unwrap();
+        form.name = "Target".into();
+        form.host = "10.77.0.2".into();
+        form.jump = JumpChoice::Profile("1".into());
+        form.auth = AuthDraft::Password {
+            password: "secret".into(),
+        };
+    }
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(matches!(
+        action,
+        AppAction::Save(ProfileDraft { jump_chain, .. })
+            if jump_chain == vec![JumpHop::Profile(ProfileHop { profile_id: "1".into() })]
+    ));
+}
+
+#[test]
+fn choosing_direct_clears_a_saved_chain() {
+    let mut existing = profile("1", "Target");
+    existing.jump_chain = vec![JumpHop::endpoint(
+        Some("root".into()),
+        "124.222.134.112",
+        22,
+    )];
+    let mut app = App::new(vec![existing]);
+    app.begin_edit();
+    app.form_mut().unwrap().jump = JumpChoice::Direct;
+
+    let draft = app.form().unwrap().draft(app.profiles()).unwrap();
+
+    assert!(draft.jump_chain.is_empty());
+}
+
+#[test]
+fn pasted_jump_chain_still_wins_over_the_selector() {
+    let mut app = App::new(vec![profile("1", "Bastion")]);
+    app.begin_add();
+    {
+        let form = app.form_mut().unwrap();
+        form.name = "Target".into();
+        form.host = "ssh -J root@jump-a,root@jump-b root@10.77.0.2".into();
+        form.jump = JumpChoice::Direct;
+        form.auth = AuthDraft::Password {
+            password: "secret".into(),
+        };
+    }
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(matches!(
+        action,
+        AppAction::Save(ProfileDraft { jump_chain, .. }) if jump_chain.len() == 2
+    ));
+}
+
+#[test]
+fn editing_a_profile_backed_hop_selects_that_profile() {
+    let target = {
+        let mut target = profile("2", "Target");
+        target.jump_chain = vec![JumpHop::Profile(ProfileHop {
+            profile_id: "1".into(),
+        })];
+        target
+    };
+    let mut app = App::new(vec![profile("1", "Bastion"), target]);
+    app.select(1);
+    app.begin_edit();
+
+    assert_eq!(app.form().unwrap().jump, JumpChoice::Profile("1".into()));
+    assert_eq!(
+        app.form()
+            .unwrap()
+            .draft(app.profiles())
+            .unwrap()
+            .jump_chain,
+        vec![JumpHop::Profile(ProfileHop {
+            profile_id: "1".into()
+        })]
+    );
+}
+
+#[test]
+fn editing_a_pasted_chain_keeps_the_custom_choice() {
+    let mut existing = profile("1", "Target");
+    existing.jump_chain = vec![
+        JumpHop::endpoint(Some("root".into()), "jump-a", 22),
+        JumpHop::endpoint(Some("root".into()), "jump-b", 2222),
+    ];
+    let mut app = App::new(vec![existing]);
+    app.begin_edit();
+
+    assert_eq!(app.form().unwrap().jump, JumpChoice::Custom);
+    assert_eq!(
+        app.form()
+            .unwrap()
+            .draft(app.profiles())
+            .unwrap()
+            .jump_chain,
+        vec![
+            JumpHop::endpoint(Some("root".into()), "jump-a", 22),
+            JumpHop::endpoint(Some("root".into()), "jump-b", 2222),
+        ]
     );
 }
 

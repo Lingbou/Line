@@ -6,7 +6,9 @@ use crossterm::event::{
 use ratatui::{Terminal, backend::TestBackend};
 
 use crate::{
-    app::{App, AppAction, AuthDraft, FormField, KeyChoice, KeySource, MouseTarget, Screen},
+    app::{
+        App, AppAction, AuthDraft, FormField, JumpChoice, KeyChoice, KeySource, MouseTarget, Screen,
+    },
     config::{AuthMethod, JumpHop, Profile, ProfileHop},
 };
 
@@ -318,6 +320,37 @@ fn browse_detail_reports_a_direct_connection() {
 
     let rendered = rendered_text(&terminal);
     assert!(rendered.contains("Jump  direct"), "{rendered}");
+}
+
+#[test]
+fn connection_form_shows_the_jump_selector() {
+    let mut app = App::new(vec![profile("Bastion")]);
+    app.begin_add();
+    app.form_mut().unwrap().jump = JumpChoice::Profile("Bastion".into());
+
+    let backend = TestBackend::new(100, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(rendered.contains("Jump  ‹ Bastion ›"), "{rendered}");
+}
+
+#[test]
+fn connection_form_marks_a_missing_jump_profile() {
+    let mut app = App::new(Vec::new());
+    app.begin_add();
+    app.form_mut().unwrap().jump = JumpChoice::Profile("deleted".into());
+
+    let backend = TestBackend::new(100, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(
+        rendered.contains("Jump  ‹ missing (deleted) ›"),
+        "{rendered}"
+    );
 }
 
 #[test]

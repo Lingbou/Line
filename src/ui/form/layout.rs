@@ -25,31 +25,33 @@ pub(super) fn form_layout(area: Rect, form: &FormState) -> FormLayout {
         .saturating_sub(if area.width >= 48 { 4 } else { 0 })
         .min(EDITOR_MAX_WIDTH);
     let roomy = width.saturating_sub(4) >= ROOMY_BODY_WIDTH;
+    // Every mode reserves one extra row above Authentication for the inline
+    // jump selector.
     let body_height = match (&form.auth, roomy) {
-        (AuthDraft::Password { .. }, _) => 12,
+        (AuthDraft::Password { .. }, _) => 13,
         (
             AuthDraft::Key {
                 source: KeySource::Existing,
                 ..
             },
             true,
-        ) => 16,
+        ) => 20,
         (
             AuthDraft::Key {
                 source: KeySource::Existing,
                 ..
             },
             false,
-        ) => 14,
+        ) => 15,
         (
             AuthDraft::Key {
                 source: KeySource::Paste,
                 ..
             },
             true,
-        ) => 19,
-        (AuthDraft::Key { .. }, true) => 17,
-        (AuthDraft::Key { .. }, false) => 15,
+        ) => 23,
+        (AuthDraft::Key { .. }, true) => 18,
+        (AuthDraft::Key { .. }, false) => 16,
     };
     let header_height: u16 = if roomy { 3 } else { 2 };
     let preferred_height = body_height + header_height + 5;
@@ -244,7 +246,7 @@ mod tests {
     fn editor_stays_content_sized_on_large_terminals() {
         let app = App::new(Vec::new());
         let layout = form_layout(Rect::new(0, 0, 240, 64), app.form().unwrap());
-        assert_eq!(layout.editor, Rect::new(72, 22, 96, 20));
+        assert_eq!(layout.editor, Rect::new(72, 21, 96, 21));
         assert_parts_are_inside_editor(layout);
     }
 

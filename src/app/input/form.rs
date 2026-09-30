@@ -107,6 +107,17 @@ impl App {
                 }
                 _ => {}
             },
+            Some(FormField::Jump) => match key.code {
+                KeyCode::Left => {
+                    self.cycle_jump(-1);
+                    return AppAction::None;
+                }
+                KeyCode::Right | KeyCode::Char(' ') => {
+                    self.cycle_jump(1);
+                    return AppAction::None;
+                }
+                _ => {}
+            },
             Some(FormField::KeySource) => match key.code {
                 KeyCode::Left => {
                     self.cycle_key_source(-1);

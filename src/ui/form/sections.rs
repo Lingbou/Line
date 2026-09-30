@@ -1,9 +1,20 @@
-use ratatui::{Frame, layout::Rect, style::Style, widgets::Paragraph};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::Style,
+    text::{Line, Span},
+    widgets::Paragraph,
+};
 
-use crate::app::{App, AuthDraft, FormField, FormState, KeySource, MouseRegions};
+use crate::app::{
+    App, AuthDraft, FormField, FormState, JumpChoice, KeySource, MouseRegions, MouseTarget,
+};
 
 use super::{
-    super::theme::MUTED,
+    super::{
+        helpers::truncate,
+        theme::{ACCENT_2, MUTED, TEXT},
+    },
     auth::{
         key_value, password_label, render_existing_key_action, render_key_sources,
         render_public_key, render_segmented_auth, render_show_password,
@@ -67,7 +78,8 @@ pub(super) fn draw_form_fields(
     let (host, port) = split_trailing_field(row(area, if roomy { 3 } else { 4 }, 2), 9);
     input(frame, host, "Host", &form.host, FormField::Host, regions);
     input(frame, port, "Port", &form.port, FormField::Port, regions);
-    let auth_y = if roomy { 7 } else { 8 };
+    let auth_y = if roomy { 8 } else { 9 };
+    render_jump_selector(frame, row(area, auth_y - 2, 1), app, form, regions);
     hint(frame, row(area, auth_y - 1, 1), "Authentication");
     render_segmented_auth(frame, row(area, auth_y, 1), form, regions);
     match &form.auth {
@@ -146,6 +158,71 @@ pub(super) fn draw_form_fields(
                 hint(frame, row(area, next_y + 2, 1), help);
             }
         }
+    }
+}
+
+/// Render the jump selector: `direct`, one entry per saved connection, and
+/// the pasted-custom chain.
+fn render_jump_selector(
+    frame: &mut Frame<'_>,
+    rect: Rect,
+    app: &App,
+    form: &FormState,
+    regions: &mut MouseRegions,
+) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let active = form.field == FormField::Jump;
+    let label = match &form.jump {
+        JumpChoice::Direct => "direct".to_owned(),
+        JumpChoice::Profile(profile_id) => app
+            .profiles()
+            .iter()
+            .find(|profile| profile.id == *profile_id)
+            .map(|profile| profile.name.clone())
+            .unwrap_or_else(|| format!("missing ({profile_id})")),
+        JumpChoice::Custom => custom_jump_label(form),
+    };
+    let value_style = if active {
+        Style::default().fg(ACCENT_2)
+    } else {
+        Style::default().fg(TEXT)
+    };
+    let text = Line::from(vec![
+        Span::styled("Jump  ", Style::default().fg(MUTED)),
+        Span::styled(
+            truncate(
+                &format!("‹ {label} ›"),
+                rect.width.saturating_sub(8) as usize,
+            ),
+            value_style,
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text),
+        Rect::new(
+            rect.x + 2,
+            rect.y,
+            rect.width.saturating_sub(2),
+            rect.height,
+        ),
+    );
+    regions.add(
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        MouseTarget::Field(FormField::Jump),
+    );
+}
+
+/// Summarize the pasted chain in one selector label.
+fn custom_jump_label(form: &FormState) -> String {
+    match form.jump_chain.len() {
+        0 => "custom".to_owned(),
+        1 => "custom (1 hop)".to_owned(),
+        count => format!("custom ({count} hops)"),
     }
 }
 

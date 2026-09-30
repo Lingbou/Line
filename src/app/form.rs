@@ -1,9 +1,45 @@
-use crate::config::{AuthMethod, JumpHop, Profile, profile_name_is_path_safe, profile_names_equal};
+use crate::config::{
+    AuthMethod, JumpHop, Profile, ProfileHop, profile_name_is_path_safe, profile_names_equal,
+};
 
 use super::{
-    AuthDraft, DEFAULT_PORT, FormField, KeySource, ProfileDraft, SaveMode,
+    AuthDraft, DEFAULT_PORT, FormField, JumpChoice, KeySource, ProfileDraft, SaveMode,
     helpers::{parse_endpoint_shorthand, parse_jump_chain, path_to_string},
 };
+
+impl JumpChoice {
+    /// Read the selector back from a saved chain.
+    fn from_chain(chain: &[JumpHop]) -> Self {
+        match chain {
+            [] => Self::Direct,
+            [JumpHop::Profile(reference)] => Self::Profile(reference.profile_id.clone()),
+            _ => Self::Custom,
+        }
+    }
+
+    /// Every choice the selector offers for the given saved profiles.
+    pub(super) fn options(profiles: &[Profile]) -> Vec<Self> {
+        let mut options = vec![Self::Direct];
+        options.extend(
+            profiles
+                .iter()
+                .map(|profile| Self::Profile(profile.id.clone())),
+        );
+        options.push(Self::Custom);
+        options
+    }
+
+    /// Move `delta` steps through `options`, wrapping at both ends.
+    pub(super) fn cycle(&mut self, profiles: &[Profile], delta: i32) {
+        let options = Self::options(profiles);
+        let index = options
+            .iter()
+            .position(|option| option == self)
+            .unwrap_or(0);
+        let next = (index as i32 + delta).rem_euclid(options.len() as i32) as usize;
+        *self = options[next].clone();
+    }
+}
 
 impl AuthDraft {
     fn from_auth(auth: &AuthMethod) -> Self {
@@ -33,6 +69,7 @@ pub struct FormState {
     pub port: String,
     pub username: String,
     pub jump_chain: Vec<JumpHop>,
+    pub jump: JumpChoice,
     pub auth: AuthDraft,
     pub field: FormField,
     pub cursor: usize,
@@ -54,6 +91,7 @@ impl std::fmt::Debug for FormState {
             .field("port", &self.port)
             .field("username", &self.username)
             .field("jump_chain", &self.jump_chain)
+            .field("jump", &self.jump)
             .field("auth", &self.auth)
             .field("field", &self.field)
             .field("cursor", &self.cursor)
@@ -74,6 +112,7 @@ impl FormState {
             port: DEFAULT_PORT.to_string(),
             username: "root".to_owned(),
             jump_chain: Vec::new(),
+            jump: JumpChoice::Direct,
             auth: AuthDraft::Password {
                 password: String::new(),
             },
@@ -103,6 +142,7 @@ impl FormState {
             port: profile.port.to_string(),
             username: profile.username.clone(),
             jump_chain: profile.jump_chain.clone(),
+            jump: JumpChoice::from_chain(&profile.jump_chain),
             auth,
             field: FormField::Name,
             cursor: profile.name.chars().count(),
@@ -118,6 +158,7 @@ impl FormState {
             FormField::Username,
             FormField::Host,
             FormField::Port,
+            FormField::Jump,
             FormField::Authentication,
         ];
         match &self.auth {
@@ -164,7 +205,10 @@ impl FormState {
                 AuthDraft::Key { public_key, .. } => public_key.as_deref(),
                 _ => None,
             },
-            FormField::Authentication | FormField::ShowPassword | FormField::KeySource => None,
+            FormField::Jump
+            | FormField::Authentication
+            | FormField::ShowPassword
+            | FormField::KeySource => None,
         }
     }
 
@@ -191,7 +235,10 @@ impl FormState {
                 }
                 _ => None,
             },
-            FormField::Authentication | FormField::ShowPassword | FormField::KeySource => None,
+            FormField::Jump
+            | FormField::Authentication
+            | FormField::ShowPassword
+            | FormField::KeySource => None,
         }
     }
 
@@ -289,9 +336,17 @@ impl FormState {
             return Err("Port must be a number between 1 and 65535".into());
         }
 
+        // A chain pasted into the Host field is explicit input, so it wins
+        // over whatever the jump selector happens to show.
         let jump_chain = match jump_from_host {
             Some(spec) => parse_jump_chain(&spec)?,
-            None => self.jump_chain.clone(),
+            None => match &self.jump {
+                JumpChoice::Direct => Vec::new(),
+                JumpChoice::Profile(profile_id) => vec![JumpHop::Profile(ProfileHop {
+                    profile_id: profile_id.clone(),
+                })],
+                JumpChoice::Custom => self.jump_chain.clone(),
+            },
         };
 
         let auth = match &self.auth {
