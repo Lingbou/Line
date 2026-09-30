@@ -735,10 +735,43 @@ fn editing_profile_keeps_single_jump_chain() {
 }
 
 #[test]
-fn multi_hop_paste_is_rejected_until_supported() {
+fn host_command_with_multi_hop_jump_keeps_hop_order() {
     let mut app = App::new(Vec::new());
     let form = app.form_mut().unwrap();
-    form.host = "ssh -J root@jump-a,root@jump-b root@10.77.0.2".into();
+    form.host = "ssh -J root@124.222.134.112,deploy@10.77.0.2:2222 root@10.77.0.3".into();
+    form.auth = AuthDraft::Password {
+        password: "secret".into(),
+    };
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(matches!(
+        action,
+        AppAction::Save(ProfileDraft {
+            host,
+            jump_chain,
+            ..
+        }) if host == "10.77.0.3"
+            && jump_chain == vec![
+                JumpHop {
+                    username: Some("root".into()),
+                    host: "124.222.134.112".into(),
+                    port: 22,
+                },
+                JumpHop {
+                    username: Some("deploy".into()),
+                    host: "10.77.0.2".into(),
+                    port: 2222,
+                },
+            ]
+    ));
+}
+
+#[test]
+fn multi_hop_paste_rejects_an_empty_hop() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.host = "ssh -J root@jump-a,,root@jump-b root@10.77.0.2".into();
     form.auth = AuthDraft::Password {
         password: "secret".into(),
     };
@@ -748,8 +781,33 @@ fn multi_hop_paste_is_rejected_until_supported() {
     assert_eq!(action, AppAction::None);
     assert_eq!(
         app.form().unwrap().validation_error.as_deref(),
-        Some("Multiple jump hosts are not supported yet")
+        Some("Jump chain contains an empty hop")
     );
+}
+
+#[test]
+fn editing_profile_keeps_the_whole_multi_hop_chain() {
+    let mut existing = profile("1", "one");
+    existing.jump_chain = vec![
+        JumpHop {
+            username: Some("root".into()),
+            host: "124.222.134.112".into(),
+            port: 22,
+        },
+        JumpHop {
+            username: Some("deploy".into()),
+            host: "10.77.0.2".into(),
+            port: 2222,
+        },
+    ];
+    let mut app = App::new(vec![existing]);
+    app.begin_edit();
+
+    let draft = app.form().unwrap().draft(app.profiles()).unwrap();
+
+    assert_eq!(draft.jump_chain.len(), 2);
+    assert_eq!(draft.jump_chain[1].host, "10.77.0.2");
+    assert_eq!(draft.jump_chain[1].port, 2222);
 }
 
 #[test]

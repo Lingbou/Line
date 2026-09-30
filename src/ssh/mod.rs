@@ -87,9 +87,6 @@ pub enum SshError {
 
     #[error("invalid SSH profile: {0}")]
     InvalidProfile(#[from] ValidationError),
-
-    #[error("multi-hop ProxyJump is not supported yet")]
-    UnsupportedJumpChain,
 }
 
 /// The observable outcome of an SSH child process.
@@ -121,6 +118,34 @@ impl SessionResult {
     pub fn interrupted(&self) -> bool {
         crate::platform::current().is_interrupt_signal(self.signal)
     }
+
+    /// Index of the jump hop the OpenSSH diagnostics single out, if any.
+    ///
+    /// Every hop in a chain runs its own `ssh`, so a failure names the hop it
+    /// could not reach. The match is on whole host tokens to keep a short host
+    /// name from matching inside a longer address.
+    #[must_use]
+    pub fn failing_jump_hop(&self, chain: &[crate::config::JumpHop]) -> Option<usize> {
+        chain
+            .iter()
+            .position(|hop| mentions_host(&self.stderr_tail, &hop.host))
+    }
+}
+
+fn mentions_host(diagnostics: &str, host: &str) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    diagnostics.match_indices(host).any(|(start, _)| {
+        let before = diagnostics[..start].chars().next_back();
+        let after = diagnostics[start + host.len()..].chars().next();
+        !before.is_some_and(host_token_char) && !after.is_some_and(host_token_char)
+    })
+}
+
+/// Characters that continue a host or address token in OpenSSH diagnostics.
+fn host_token_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ':')
 }
 
 #[cfg(test)]

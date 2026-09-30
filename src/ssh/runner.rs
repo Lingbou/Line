@@ -152,10 +152,46 @@ impl SshRunner {
         Ok(session_result(status, stderr_tail))
     }
 
+    /// Build the ProxyCommand that reaches the target through the jump chain.
+    ///
+    /// OpenSSH expands `%h:%p` against the destination of the process whose
+    /// configuration carries the ProxyCommand, so each hop nests the command
+    /// for the hop before it. For `hop1,hop2` the result is:
+    ///
+    /// ```text
+    /// ssh -o ProxyCommand='ssh ... -W %h:%p -- hop1' -W %h:%p -- hop2
+    /// ```
+    ///
+    /// The command is carried by the target's OpenSSH process, so `%h:%p`
+    /// expands to the target, and the nested command's `%h:%p` expands to
+    /// `hop2` for the process that connects to it.
     fn proxy_command(
         &self,
         profile: &Profile,
+        chain: &[crate::config::JumpHop],
+        system_config: &Path,
+        null_device: &Path,
+        known_hosts: &Path,
+    ) -> String {
+        let mut command = None;
+        for hop in chain {
+            command = Some(self.proxy_hop(
+                profile,
+                hop,
+                command.as_deref(),
+                system_config,
+                null_device,
+                known_hosts,
+            ));
+        }
+        command.unwrap_or_default()
+    }
+
+    fn proxy_hop(
+        &self,
+        profile: &Profile,
         jump: &crate::config::JumpHop,
+        inner: Option<&str>,
         system_config: &Path,
         null_device: &Path,
         known_hosts: &Path,
@@ -217,16 +253,36 @@ impl SshRunner {
                 ]);
             }
         }
-        args.extend(["-W".into(), "%h:%p".into()]);
-        if jump.port != 22 {
-            args.extend(["-p".into(), jump.port.to_string()]);
-        }
-        args.push("--".into());
-        args.push(jump.destination());
-        args.iter()
+        let mut command = args
+            .iter()
             .map(|argument| shell_quote(argument))
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+
+        // The nested command is already quoted for its own OpenSSH process, so
+        // it is quoted exactly once more, for the shell that runs this command
+        // as a ProxyCommand. Re-quoting the whole option would escape those
+        // inner quotes a second time.
+        if let Some(inner) = inner {
+            command.push_str(" -o ProxyCommand=");
+            command.push_str(&shell_quote_nested(inner));
+        }
+
+        let mut tail = vec!["-W".to_owned(), "%h:%p".to_owned()];
+        if jump.port != 22 {
+            tail.extend(["-p".to_owned(), jump.port.to_string()]);
+        }
+        tail.push("--".to_owned());
+        tail.push(jump.destination());
+        command.push(' ');
+        command.push_str(
+            &tail
+                .iter()
+                .map(|argument| shell_quote(argument))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        command
     }
 
     fn configure_command(&self, command: &mut Command, profile: &Profile) {
@@ -270,10 +326,16 @@ impl SshRunner {
             .arg("-p")
             .arg(profile.port.to_string());
 
-        if let Some(jump) = profile.jump_chain.first() {
+        if !profile.jump_chain.is_empty() {
             command.arg("-o").arg(format!(
                 "ProxyCommand={}",
-                self.proxy_command(profile, jump, &system_config, &null_device, &known_hosts)
+                self.proxy_command(
+                    profile,
+                    &profile.jump_chain,
+                    &system_config,
+                    &null_device,
+                    &known_hosts
+                )
             ));
         }
 
@@ -350,6 +412,19 @@ impl SshRunner {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\''"))
+}
+
+/// Quote a nested ProxyCommand so the shell that runs the outer ProxyCommand
+/// keeps it in one argument while the inner quotes survive to the nested
+/// OpenSSH process. The value is already shell-quoted, so only the characters
+/// that stay live inside double quotes need escaping.
+fn shell_quote_nested(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`");
+    format!("\"{escaped}\"")
 }
 
 fn ensure_supported_openssh(program: &Path) -> Result<(), SshError> {
@@ -474,6 +549,58 @@ mod tests {
                 && arg.contains("'%h:%p'")
                 && arg.contains("root@124.222.134.112")
         }));
+    }
+
+    #[test]
+    fn multi_hop_chain_nests_each_hop_into_the_proxy_command() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("record");
+        let fake = fake_ssh(
+            &dir,
+            &record,
+            r#"
+            printf '%s\n' "$@" > "$RECORD"
+            exit 0
+            "#,
+        );
+        let line_dir = dir.path().join("line");
+        let runner = SshRunner::for_test(&line_dir, fake, "ssh-keygen", "/bin/false");
+        let mut target = profile(AuthMethod::Key {
+            private_key: PathBuf::from("keys/Example/key"),
+            public_key: PathBuf::from("keys/Example/key.pub"),
+        });
+        target.jump_chain = vec![
+            crate::config::JumpHop {
+                username: Some("root".into()),
+                host: "124.222.134.112".into(),
+                port: 2222,
+            },
+            crate::config::JumpHop {
+                username: Some("root".into()),
+                host: "10.77.0.2".into(),
+                port: 22,
+            },
+        ];
+
+        runner.connect(&target).expect("ssh invocation");
+
+        let args = fs::read_to_string(record).expect("recorded args");
+        let proxy = args
+            .lines()
+            .find(|arg| arg.starts_with("ProxyCommand="))
+            .expect("proxy command argument");
+        // The target connection goes through hop 2, and hop 2 through hop 1.
+        assert!(proxy.contains("'root@10.77.0.2'"), "{proxy}");
+        assert!(proxy.contains("'root@124.222.134.112'"), "{proxy}");
+        assert!(proxy.contains("'-p' '2222'"), "{proxy}");
+        assert_eq!(proxy.matches("ProxyCommand=").count(), 2, "{proxy}");
+        // Each nested ssh carries its own forward and ordering separator.
+        assert_eq!(proxy.matches("'-W'").count(), 2, "{proxy}");
+        assert_eq!(proxy.matches("'--'").count(), 2, "{proxy}");
+        assert!(
+            proxy.find("'root@124.222.134.112'") < proxy.find("'root@10.77.0.2'"),
+            "the first hop is nested inside the second: {proxy}"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::config::{AuthMethod, JumpHop, Profile, profile_name_is_path_safe, pro
 
 use super::{
     AuthDraft, DEFAULT_PORT, FormField, KeySource, ProfileDraft, SaveMode,
-    helpers::{parse_endpoint_shorthand, parse_jump_hop, path_to_string},
+    helpers::{parse_endpoint_shorthand, parse_jump_chain, path_to_string},
 };
 
 impl AuthDraft {
@@ -290,7 +290,7 @@ impl FormState {
         }
 
         let jump_chain = match jump_from_host {
-            Some(spec) => vec![parse_jump_hop(&spec)?],
+            Some(spec) => parse_jump_chain(&spec)?,
             None => self.jump_chain.clone(),
         };
 

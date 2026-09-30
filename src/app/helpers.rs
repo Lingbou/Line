@@ -111,6 +111,22 @@ pub(super) fn next_default_name(profiles: &[Profile]) -> String {
         .expect("an unused numeric default connection name always exists")
 }
 
+/// Parse an OpenSSH `-J` list into ordered Line jump hops.
+///
+/// ```text
+/// ssh -J hop1,hop2 target   ->   [hop1, hop2]
+/// ```
+pub(super) fn parse_jump_chain(value: &str) -> Result<Vec<JumpHop>, String> {
+    let mut hops = Vec::new();
+    for part in value.split(',') {
+        if part.trim().is_empty() {
+            return Err("Jump chain contains an empty hop".into());
+        }
+        hops.push(parse_jump_hop(part)?);
+    }
+    Ok(hops)
+}
+
 /// Parse one OpenSSH `-J` endpoint into a Line jump hop.
 pub(super) fn parse_jump_hop(value: &str) -> Result<JumpHop, String> {
     let value = value.trim();
@@ -118,7 +134,7 @@ pub(super) fn parse_jump_hop(value: &str) -> Result<JumpHop, String> {
         return Err("Jump host cannot be empty".into());
     }
     if value.contains(',') {
-        return Err("Multiple jump hosts are not supported yet".into());
+        return Err("Jump host cannot contain ','; pass one hop at a time".into());
     }
     if value
         .chars()

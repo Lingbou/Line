@@ -4,7 +4,7 @@ mod linux {
         fs,
         net::{TcpListener, TcpStream},
         path::{Path, PathBuf},
-        process::{Child, Command, Stdio},
+        process::{Child, Command, Output, Stdio},
         thread,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
@@ -16,22 +16,167 @@ mod linux {
 
     #[test]
     fn line_connects_through_a_single_containerized_jump_host() {
-        if !docker_usable() {
-            eprintln!("skipping containerized ProxyJump test: Docker is unavailable");
+        let Some(fixture) = Fixture::start(&workspace(), 1) else {
             return;
+        };
+
+        let output = fixture.run_line();
+        assert_success(&output);
+    }
+
+    #[test]
+    fn line_connects_through_two_containerized_jump_hosts() {
+        let Some(fixture) = Fixture::start(&workspace(), 2) else {
+            return;
+        };
+
+        let output = fixture.run_line();
+        assert_success(&output);
+    }
+
+    fn workspace() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn assert_success(output: &Output) {
+        assert!(
+            output.status.success(),
+            "line failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// sshd containers plus the Line configuration that reaches them.
+    ///
+    /// The first jump is published on the host, so Line can only start the
+    /// chain there. Every later hop and the target are reachable strictly
+    /// through the hop before them, resolved by Docker's network DNS.
+    struct Fixture {
+        _temp: TempDir,
+        cleanup: Cleanup,
+        line_root: PathBuf,
+    }
+
+    impl Fixture {
+        fn start(workspace: &Path, hops: usize) -> Option<Self> {
+            if !docker_usable() {
+                eprintln!("skipping containerized ProxyJump test: Docker is unavailable");
+                return None;
+            }
+            assert!(hops >= 1, "a jump chain needs at least one hop");
+
+            let fixture = workspace.join("tests/fixtures/sshd");
+            let suffix = unique_suffix();
+            let image = format!("line-sshd-test:{suffix}");
+            let network = format!("line-proxyjump-net-{suffix}");
+            let jump_names: Vec<String> = (1..=hops)
+                .map(|index| format!("line-proxyjump-j{index}-{suffix}"))
+                .collect();
+            let target_name = format!("line-proxyjump-target-{suffix}");
+
+            let temp = TempDir::new().expect("temp dir");
+            let client_key = temp.path().join("client_key");
+            let authorized_keys = temp.path().join("authorized_keys");
+            create_client_identity(&client_key, &authorized_keys);
+
+            run(Command::new("docker").args([
+                "build",
+                "-t",
+                &image,
+                "-f",
+                fixture
+                    .join("Dockerfile")
+                    .to_str()
+                    .expect("dockerfile path"),
+                fixture.to_str().expect("fixture path"),
+            ]));
+
+            let mut containers = jump_names.clone();
+            containers.push(target_name.clone());
+            let cleanup = Cleanup::new(network.clone(), image.clone(), containers);
+            run(Command::new("docker").args(["network", "create", &network]));
+
+            let host_port = free_port();
+            run(&mut docker_run(
+                &jump_names[0],
+                &network,
+                &image,
+                Some(host_port),
+                &authorized_keys,
+                false,
+            ));
+            for name in jump_names.iter().skip(1) {
+                run(&mut docker_run(
+                    name,
+                    &network,
+                    &image,
+                    None,
+                    &authorized_keys,
+                    false,
+                ));
+            }
+            run(&mut docker_run(
+                &target_name,
+                &network,
+                &image,
+                None,
+                &authorized_keys,
+                true,
+            ));
+            wait_for_port(host_port);
+
+            let mut jump_chain = vec![JumpHop {
+                username: Some("root".into()),
+                host: "127.0.0.1".into(),
+                port: host_port,
+            }];
+            for name in jump_names.iter().skip(1) {
+                jump_chain.push(JumpHop {
+                    username: Some("root".into()),
+                    host: name.clone(),
+                    port: 22,
+                });
+            }
+
+            let line_root = temp.path().join("line");
+            install_profile(
+                &line_root,
+                &target_name,
+                jump_chain,
+                &client_key,
+                &authorized_keys,
+            );
+
+            Some(Self {
+                _temp: temp,
+                cleanup,
+                line_root,
+            })
         }
 
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let fixture = workspace.join("tests/fixtures/sshd");
-        let image = format!("line-sshd-test:{}", unique_suffix());
-        let network = format!("line-proxyjump-net-{}", unique_suffix());
-        let jump_name = format!("line-proxyjump-jump-{}", unique_suffix());
-        let target_name = format!("line-proxyjump-target-{}", unique_suffix());
-        let temp = TempDir::new().expect("temp dir");
-        let client_key = temp.path().join("client_key");
-        let authorized_keys = temp.path().join("authorized_keys");
-        let line_root = temp.path().join("line");
+        fn run_line(&self) -> Output {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_line"))
+                .env("LINE_CONFIG_DIR", &self.line_root)
+                .arg("Target")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn line");
+            wait_for_child(&mut child, STARTUP_TIMEOUT);
+            child.wait_with_output().expect("collect line output")
+        }
+    }
 
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            self.cleanup.finish();
+        }
+    }
+
+    fn create_client_identity(client_key: &Path, authorized_keys: &Path) {
         run(Command::new("ssh-keygen").args([
             "-q",
             "-t",
@@ -41,100 +186,48 @@ mod linux {
             "-f",
             client_key.to_str().expect("client key path"),
         ]));
-        fs::copy(client_key.with_extension("pub"), &authorized_keys).expect("authorized key copy");
+        fs::copy(client_key.with_extension("pub"), authorized_keys).expect("authorized key copy");
         fs::set_permissions(
-            &authorized_keys,
+            authorized_keys,
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         )
         .expect("authorized key mode");
+    }
 
-        run(Command::new("docker").args([
-            "build",
-            "-t",
-            &image,
-            "-f",
-            fixture
-                .join("Dockerfile")
-                .to_str()
-                .expect("dockerfile path"),
-            fixture.to_str().expect("fixture path"),
-        ]));
-        let mut cleanup = Cleanup::new(
-            network.clone(),
-            image.clone(),
-            vec![jump_name.clone(), target_name.clone()],
-        );
-        run(Command::new("docker").args(["network", "create", &network]));
-
-        let jump_port = free_port();
-        run(&mut docker_run(
-            &jump_name,
-            &network,
-            &image,
-            Some(jump_port),
-            &authorized_keys,
-            false,
-        ));
-        run(&mut docker_run(
-            &target_name,
-            &network,
-            &image,
-            None,
-            &authorized_keys,
-            true,
-        ));
-        wait_for_port(jump_port);
-
+    fn install_profile(
+        line_root: &Path,
+        target_host: &str,
+        jump_chain: Vec<JumpHop>,
+        client_key: &Path,
+        authorized_keys: &Path,
+    ) {
         let key_dir = line_root.join("keys/Target");
         fs::create_dir_all(&key_dir).expect("key dir");
         let private_key = key_dir.join("key");
         let public_key = key_dir.join("key.pub");
-        fs::copy(&client_key, &private_key).expect("private key copy");
-        fs::copy(&authorized_keys, &public_key).expect("public key copy");
+        fs::copy(client_key, &private_key).expect("private key copy");
+        fs::copy(authorized_keys, &public_key).expect("public key copy");
         set_private_file_mode(&private_key);
         set_private_file_mode(&public_key);
 
         let profile = Profile {
             id: "target".into(),
             name: "Target".into(),
-            host: target_name.clone(),
+            host: target_host.to_owned(),
             port: 22,
             username: "root".into(),
-            jump_chain: vec![JumpHop {
-                username: Some("root".into()),
-                host: "127.0.0.1".into(),
-                port: jump_port,
-            }],
+            jump_chain,
             auth: AuthMethod::Key {
                 private_key: PathBuf::from("keys/Target/key"),
                 public_key: PathBuf::from("keys/Target/key.pub"),
             },
         };
-        ConfigStore::at(&line_root)
+        ConfigStore::at(line_root)
             .save(&Profiles {
                 profiles: vec![profile],
                 ..Profiles::default()
             })
             .expect("save test profile");
-
-        let mut child = Command::new(env!("CARGO_BIN_EXE_line"))
-            .env("LINE_CONFIG_DIR", &line_root)
-            .arg("Target")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn line");
-        let status = wait_for_child(&mut child, STARTUP_TIMEOUT);
-        let output = child.wait_with_output().expect("collect line output");
-        cleanup.finish();
-
-        assert!(
-            status.success(),
-            "line failed with {status:?}\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 
     struct Cleanup {
@@ -176,12 +269,6 @@ mod linux {
                 .stderr(Stdio::null())
                 .status();
             self.finished = true;
-        }
-    }
-
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            self.finish();
         }
     }
 

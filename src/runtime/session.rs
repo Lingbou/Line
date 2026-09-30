@@ -81,7 +81,7 @@ pub(super) fn connect(
                 None => app.set_status("Disconnected"),
             }
         }
-        Ok(result) => app.set_error(session_failure(&result)),
+        Ok(result) => app.set_error(session_failure(&profile, &result)),
         Err(error) => app.set_error(error.to_string()),
     }
 
@@ -120,11 +120,24 @@ fn confirm_host_key_replacement(
     ))
 }
 
-pub(super) fn session_failure(result: &SessionResult) -> String {
+pub(super) fn session_failure(profile: &Profile, result: &SessionResult) -> String {
     let status = match (result.exit_code, result.signal) {
         (Some(code), _) => format!("ssh exited with code {code}"),
         (_, Some(signal)) => format!("ssh was terminated by signal {signal}"),
         _ => "ssh ended without an exit status".to_owned(),
+    };
+    // A chain runs one ssh per hop, so name the hop when OpenSSH blames one.
+    let status = match result.failing_jump_hop(&profile.jump_chain) {
+        Some(index) => {
+            let hop = &profile.jump_chain[index];
+            format!(
+                "{status} · jump {}/{} {} unreachable",
+                index + 1,
+                profile.jump_chain.len(),
+                hop.authority()
+            )
+        }
+        None => status,
     };
     let diagnostics = result.stderr_tail.trim();
     if diagnostics.is_empty() {

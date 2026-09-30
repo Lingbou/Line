@@ -7,6 +7,25 @@ fn common_path_prefix_handles_unicode() {
     );
 }
 
+use line::{
+    config::{AuthMethod, JumpHop, Profile},
+    ssh::SessionResult,
+};
+
+fn failure_profile(jump_chain: Vec<JumpHop>) -> Profile {
+    Profile {
+        id: "target".into(),
+        name: "Target".into(),
+        host: "10.77.0.2".into(),
+        port: 22,
+        username: "root".into(),
+        jump_chain,
+        auth: AuthMethod::Password {
+            password: "pw".into(),
+        },
+    }
+}
+
 #[test]
 fn failed_session_message_keeps_diagnostics() {
     let result = SessionResult {
@@ -15,11 +34,55 @@ fn failed_session_message_keeps_diagnostics() {
         stderr_tail: "Permission denied (publickey,password).\n".into(),
     };
     assert_eq!(
-        session_failure(&result),
+        session_failure(&failure_profile(Vec::new()), &result),
         "ssh exited with code 255\n\nPermission denied (publickey,password)."
     );
 }
-use line::ssh::SessionResult;
+
+#[test]
+fn failed_session_message_names_the_unreachable_jump_hop() {
+    let result = SessionResult {
+        exit_code: Some(255),
+        signal: None,
+        stderr_tail: "ssh: connect to host 10.0.0.5 port 22: Connection refused\n".into(),
+    };
+    let profile = failure_profile(vec![
+        JumpHop {
+            username: Some("root".into()),
+            host: "124.222.134.112".into(),
+            port: 22,
+        },
+        JumpHop {
+            username: Some("root".into()),
+            host: "10.0.0.5".into(),
+            port: 22,
+        },
+    ]);
+
+    assert_eq!(
+        session_failure(&profile, &result),
+        "ssh exited with code 255 · jump 2/2 root@10.0.0.5 unreachable\n\nssh: connect to host 10.0.0.5 port 22: Connection refused"
+    );
+}
+
+#[test]
+fn failed_session_message_ignores_a_hop_that_only_shares_a_prefix() {
+    let result = SessionResult {
+        exit_code: Some(255),
+        signal: None,
+        stderr_tail: "ssh: connect to host 10.0.0.55 port 22: Connection refused\n".into(),
+    };
+    let profile = failure_profile(vec![JumpHop {
+        username: None,
+        host: "10.0.0.5".into(),
+        port: 22,
+    }]);
+
+    assert_eq!(
+        session_failure(&profile, &result),
+        "ssh exited with code 255\n\nssh: connect to host 10.0.0.55 port 22: Connection refused"
+    );
+}
 
 use super::{path::common_prefix, session::session_failure};
 
