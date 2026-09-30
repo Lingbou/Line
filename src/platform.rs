@@ -14,6 +14,20 @@ pub(crate) enum PlatformError {
     HomeNotSet,
 }
 
+pub(crate) struct InterruptGuard {
+    old_int: libc::sighandler_t,
+    old_quit: libc::sighandler_t,
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::signal(libc::SIGINT, self.old_int);
+            libc::signal(libc::SIGQUIT, self.old_quit);
+        }
+    }
+}
+
 pub(crate) trait Platform: Send + Sync {
     fn config_root(&self) -> Result<PathBuf, PlatformError>;
     fn ssh_program(&self) -> PathBuf;
@@ -22,6 +36,8 @@ pub(crate) trait Platform: Send + Sync {
     fn null_device(&self) -> PathBuf;
     fn set_private_mode(&self, path: &Path, mode: u32) -> io::Result<()>;
     fn reset_child_signals(&self, command: &mut Command);
+    fn install_interrupt_guard(&self) -> InterruptGuard;
+    fn is_interrupt_signal(&self, signal: Option<i32>) -> bool;
     fn terminate_child_tree(&self, child: &mut Child);
 }
 
@@ -76,6 +92,16 @@ impl Platform for LinuxPlatform {
                 });
             }
         }
+    }
+
+    fn install_interrupt_guard(&self) -> InterruptGuard {
+        let old_int = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+        let old_quit = unsafe { libc::signal(libc::SIGQUIT, libc::SIG_IGN) };
+        InterruptGuard { old_int, old_quit }
+    }
+
+    fn is_interrupt_signal(&self, signal: Option<i32>) -> bool {
+        matches!(signal, Some(libc::SIGINT) | Some(libc::SIGQUIT))
     }
 
     fn terminate_child_tree(&self, child: &mut Child) {
@@ -134,6 +160,14 @@ mod tests {
         .expect("config root");
 
         assert_eq!(root, PathBuf::from("/tmp/custom-line"));
+    }
+
+    #[test]
+    fn recognizes_terminal_interrupt_signals() {
+        assert!(current().is_interrupt_signal(Some(libc::SIGINT)));
+        assert!(current().is_interrupt_signal(Some(libc::SIGQUIT)));
+        assert!(!current().is_interrupt_signal(Some(libc::SIGTERM)));
+        assert!(!current().is_interrupt_signal(None));
     }
 
     #[test]

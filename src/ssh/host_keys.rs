@@ -49,6 +49,7 @@ impl SshRunner {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         platform::current().reset_child_signals(&mut keygen);
+        let _interrupt_guard = platform::current().install_interrupt_guard();
         let child = {
             let mut attempts = 0;
             loop {

@@ -115,6 +115,12 @@ impl SessionResult {
     pub const fn success(&self) -> bool {
         matches!(self.exit_code, Some(0)) && self.signal.is_none()
     }
+
+    /// Whether the child ended because the user interrupted the terminal.
+    #[must_use]
+    pub fn interrupted(&self) -> bool {
+        crate::platform::current().is_interrupt_signal(self.signal)
+    }
 }
 
 #[cfg(test)]

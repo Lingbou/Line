@@ -113,6 +113,7 @@ impl SshRunner {
         // waits for SSH. Restore normal dispositions in the child after fork
         // so Ctrl-C still reaches and terminates OpenSSH as expected.
         platform::current().reset_child_signals(&mut command);
+        let _interrupt_guard = platform::current().install_interrupt_guard();
 
         let mut child = {
             let mut attempts = 0;
@@ -684,6 +685,23 @@ mod tests {
         assert_eq!(result.stderr_tail.len(), STDERR_TAIL_LIMIT);
         assert!(result.stderr_tail.ends_with("THE-END\n"));
         assert_eq!(result.exit_code, Some(255));
+    }
+
+    #[test]
+    fn interrupt_signal_is_classified_for_terminal_restoration() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("unused");
+        let fake = fake_ssh(&dir, &record, "kill -INT $$");
+        let runner = SshRunner::for_test(dir.path().join("line"), fake, "ssh-keygen", "/bin/false");
+        let result = runner
+            .connect(&profile(AuthMethod::Key {
+                private_key: PathBuf::from("keys/Example/key"),
+                public_key: PathBuf::from("keys/Example/key.pub"),
+            }))
+            .expect("ssh invocation");
+
+        assert_eq!(result.signal, Some(libc::SIGINT));
+        assert!(result.interrupted());
     }
 
     #[test]

@@ -51,12 +51,14 @@ pub(super) fn connect(
     // running ssh-keygen fails. Otherwise a transient I/O error would strand
     // the user's terminal in cooked/alternate-screen state.
     let session = (|| -> Result<Result<SessionResult, line::ssh::SshError>, DynError> {
-        let mut outcome = run_ssh_with_interrupt_guard(runner, &profile, shutdown);
+        let mut outcome = runner.connect_with_cancel(&profile, shutdown);
         if let Ok(result) = &outcome
             && is_host_key_changed(result)
             && confirm_host_key_replacement(&profile, result, shutdown)?
         {
-            outcome = replace_and_reconnect_with_interrupt_guard(runner, &profile, shutdown);
+            outcome = runner
+                .replace_host_key(&profile)
+                .and_then(|()| runner.connect_with_cancel(&profile, shutdown));
         }
         Ok(outcome)
     })();
@@ -71,9 +73,7 @@ pub(super) fn connect(
     };
 
     match outcome {
-        Ok(result) if matches!(result.signal, Some(libc::SIGINT) | Some(libc::SIGQUIT)) => {
-            app.set_status("Disconnected · interrupted")
-        }
+        Ok(result) if result.interrupted() => app.set_status("Disconnected · interrupted"),
         Ok(result) if result.signal.is_none() && result.exit_code != Some(255) => {
             match result.exit_code {
                 Some(0) => app.set_status("Disconnected"),
@@ -94,65 +94,6 @@ pub(super) fn connect(
         let _ = refresh_key_choices(store, app);
     }
     Ok(())
-}
-
-fn run_ssh_with_interrupt_guard(
-    runner: &SshRunner,
-    profile: &Profile,
-    shutdown: &AtomicBool,
-) -> Result<SessionResult, line::ssh::SshError> {
-    let _guard = InterruptGuard::install();
-    runner.connect_with_cancel(profile, shutdown)
-}
-
-fn replace_and_reconnect_with_interrupt_guard(
-    runner: &SshRunner,
-    profile: &Profile,
-    shutdown: &AtomicBool,
-) -> Result<SessionResult, line::ssh::SshError> {
-    let replacement = {
-        let _guard = InterruptGuard::install();
-        runner.replace_host_key(profile)
-    };
-    replacement.and_then(|()| run_ssh_with_interrupt_guard(runner, profile, shutdown))
-}
-
-#[cfg(unix)]
-struct InterruptGuard {
-    old_int: libc::sighandler_t,
-    old_quit: libc::sighandler_t,
-}
-
-#[cfg(unix)]
-impl InterruptGuard {
-    fn install() -> Self {
-        // SAFETY: temporarily changing SIGINT/SIGQUIT dispositions around a
-        // blocking child wait is a standard POSIX operation. The old handlers
-        // are restored in Drop before control returns to the TUI event loop.
-        let old_int = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
-        let old_quit = unsafe { libc::signal(libc::SIGQUIT, libc::SIG_IGN) };
-        Self { old_int, old_quit }
-    }
-}
-
-#[cfg(unix)]
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        unsafe {
-            libc::signal(libc::SIGINT, self.old_int);
-            libc::signal(libc::SIGQUIT, self.old_quit);
-        }
-    }
-}
-
-#[cfg(not(unix))]
-struct InterruptGuard;
-
-#[cfg(not(unix))]
-impl InterruptGuard {
-    fn install() -> Self {
-        Self
-    }
 }
 
 fn confirm_host_key_replacement(
