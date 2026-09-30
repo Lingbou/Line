@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 
 use super::storage::write_private_file;
 use super::{KeyError, KeyResult};
+use crate::platform;
 
 pub(super) fn canonical_pair_matches(
     root: &Path,
@@ -86,13 +87,14 @@ pub(super) fn derive_public_key(root: &Path, private: &[u8]) -> KeyResult<String
     let temporary = root.join(format!(".keygen-{}", super::unique_suffix()));
     write_private_file(&temporary, private)?;
     let result = (|| {
-        let output = Command::new("ssh-keygen")
+        let program = platform::current().ssh_keygen_program();
+        let output = Command::new(&program)
             .args(["-y", "-P", "", "-f"])
             .arg(&temporary)
             .stdin(Stdio::null())
             .output()
             .map_err(|source| KeyError::Io {
-                path: std::path::PathBuf::from("ssh-keygen"),
+                path: program,
                 source,
             })?;
         if !output.status.success() {
