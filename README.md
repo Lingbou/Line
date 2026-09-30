@@ -75,6 +75,19 @@ Download `line-v<version>-universal2-apple-darwin.tar.gz` from [Releases](https:
 
 Line uses the OpenSSH that ships with macOS, so there is nothing else to install.
 
+### Windows (x86_64 and arm64)
+
+Download the archive for your architecture from [Releases](https://github.com/Lingbou/Line/releases):
+
+- `line-v<version>-x86_64-pc-windows-msvc.zip`
+- `line-v<version>-aarch64-pc-windows-msvc.zip`
+
+Extract `line.exe` and put it somewhere on your `PATH`. Run it from Windows Terminal.
+
+Line drives the OpenSSH client that ships with Windows. If `ssh` is not already available, install it from **Settings → System → Optional features → OpenSSH Client**.
+
+Saved passwords are not supported on Windows: Windows OpenSSH has no `SSH_ASKPASS`, so Line refuses a password-backed connection there and asks for a key instead.
+
 ### Build from Source
 
 Prerequisites: Rust (1.88+), OpenSSH, and `ssh-keygen`. Saved-password connections use `SSH_ASKPASS` and require OpenSSH 8.4+.

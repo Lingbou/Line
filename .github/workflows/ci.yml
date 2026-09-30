@@ -69,6 +69,47 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+  windows:
+    name: Windows (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x86_64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy lints
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Run test suite
+        run: cargo test --all-targets --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Smoke test the binary
+        shell: pwsh
+        run: |
+          ./target/release/line.exe --version
+          ./target/release/line.exe --list
+
   msrv:
     name: Minimum Supported Rust Version
     runs-on: ubuntu-latest

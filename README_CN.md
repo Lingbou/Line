@@ -75,6 +75,19 @@ sudo apk add openssh-client openssh-keygen
 
 Line 直接使用 macOS 自带的 OpenSSH，无需额外安装。
 
+### Windows（x86_64 与 arm64）
+
+从 [Releases](https://github.com/Lingbou/Line/releases) 下载对应架构的压缩包：
+
+- `line-v<version>-x86_64-pc-windows-msvc.zip`
+- `line-v<version>-aarch64-pc-windows-msvc.zip`
+
+解压出 `line.exe` 后放进 `PATH` 里的任意目录，在 Windows Terminal 中运行即可。
+
+Line 使用 Windows 自带的 OpenSSH 客户端；如果没有，可在 **设置 → 系统 → 可选功能 → OpenSSH 客户端** 中安装。
+
+Windows 不支持保存密码：Windows 版 OpenSSH 没有 `SSH_ASKPASS`，Line 会直接拒绝密码型连接并提示改用密钥。
+
 ### 源码编译安装
 
 依赖要求：Rust (1.88+)、系统自带的 OpenSSH 与 `ssh-keygen`。保存密码连接使用 `SSH_ASKPASS`，需要 OpenSSH 8.4 或更高版本。

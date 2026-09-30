@@ -75,6 +75,10 @@ Saved passwords need `SSH_ASKPASS`, which Windows OpenSSH does not implement,
 so a password profile is refused on Windows with an actionable message instead
 of being launched into an interactive prompt Line cannot answer.
 
+Windows ships one `.zip` per architecture containing `line.exe`, its README,
+and its license. WSL keeps using the Linux artifacts rather than a separate
+Windows build.
+
 AUR and `.apk` packaging are follow-ups, not v0.2 deliverables. Revisit the AUR
 when a maintainer owns the AUR repository and the PKGBUILD can be smoke-tested
 automatically. Revisit a native `.apk` when automated builds of a signed

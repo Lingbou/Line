@@ -159,9 +159,64 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  windows:
+    name: Build Windows (${{ matrix.arch }})
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x86_64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test the binary
+        shell: pwsh
+        run: |
+          $binary = "target/${{ matrix.target }}/release/line.exe"
+          & $binary --version
+          & $binary --help > $null
+
+      - name: Package archive (.zip)
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF -replace 'refs/tags/', ''
+          $version = $tag -replace '^v', ''
+          $package = "line-v$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path "dist/$package" -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/line.exe" "dist/$package/line.exe"
+          Copy-Item README.md, LICENSE "dist/$package"
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+          Remove-Item -Recurse "dist/$package"
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
-    needs: [build, macos]
+    needs: [build, macos, windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download packaged artifacts
