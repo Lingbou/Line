@@ -386,11 +386,37 @@ fn normalize_name(name: &str) -> String {
 }
 
 /// Whether a profile name can safely be used verbatim as one directory name.
+/// Whether a profile name is safe as a single directory component.
+///
+/// The rule is the union of the platforms Line ships on rather than the rule
+/// of the host, because a saved profile has to keep working when the same
+/// `~/.line` is used from another platform. Windows accepts `/` as a separator
+/// just like `\`, keeps a set of characters out of file names, and reserves
+/// device names such as `NUL`, so all of those are rejected everywhere.
 pub fn profile_name_is_path_safe(name: &str) -> bool {
     !name.chars().any(char::is_control)
-        && !name.contains(std::path::MAIN_SEPARATOR)
+        && !name.contains(['/', '\\'])
+        && !name.contains(['<', '>', ':', '"', '|', '?', '*'])
+        && !name.ends_with([' ', '.'])
         && !matches!(name, "." | "..")
         && !name.eq_ignore_ascii_case(".shared")
+        && !is_reserved_device_name(name)
+}
+
+/// Windows reserves these names, with or without an extension, for devices.
+fn is_reserved_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    if stem.eq_ignore_ascii_case("CON")
+        || stem.eq_ignore_ascii_case("PRN")
+        || stem.eq_ignore_ascii_case("AUX")
+        || stem.eq_ignore_ascii_case("NUL")
+    {
+        return true;
+    }
+    let bytes = stem.as_bytes();
+    bytes.len() == 4
+        && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
+        && bytes[3].is_ascii_digit()
 }
 
 pub fn profile_names_equal(left: &str, right: &str) -> bool {
@@ -462,6 +488,47 @@ fn validate_key_relative_path(path: &Path) -> std::result::Result<(), Validation
         return Err(ValidationError::KeyOutsideDirectory(path.to_owned()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod profile_name_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_names_that_are_safe_everywhere() {
+        for name in ["Production", "prod-web-01", "a.b", "生产服务器", "_hidden"] {
+            assert!(profile_name_is_path_safe(name), "{name} should be accepted");
+        }
+    }
+
+    #[test]
+    fn rejects_path_separators_from_either_platform() {
+        for name in ["prod/root", "prod\\root", "a/b\\c"] {
+            assert!(
+                !profile_name_is_path_safe(name),
+                "{name} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_windows_reserved_names_and_characters() {
+        for name in [
+            "CON", "nul", "AUX.txt", "COM1", "com9", "LPT0", "prod:1", "a<b", "a|b", "a?b", "a*b",
+            "a\"b",
+        ] {
+            assert!(
+                !profile_name_is_path_safe(name),
+                "{name} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_names_windows_cannot_end_with() {
+        assert!(!profile_name_is_path_safe("prod "));
+        assert!(!profile_name_is_path_safe("prod."));
+    }
 }
 
 #[cfg(test)]

@@ -305,7 +305,9 @@ impl FormState {
             return Err("Name cannot be empty".into());
         }
         if !profile_name_is_path_safe(name) {
-            return Err("Name cannot contain '/' or use a reserved directory name".into());
+            return Err(
+                "Name cannot contain path separators or use a reserved directory name".into(),
+            );
         }
         if profiles.iter().any(|profile| {
             profile_names_equal(&profile.name, name)

@@ -354,7 +354,7 @@ fn connection_name_must_be_safe_as_one_key_directory_component() {
     ));
     assert_eq!(
         app.form().unwrap().validation_error.as_deref(),
-        Some("Name cannot contain '/' or use a reserved directory name")
+        Some("Name cannot contain path separators or use a reserved directory name")
     );
 }
 
