@@ -145,3 +145,63 @@ jobs:
           sudo dpkg -i "$DEB"
           line --version
           sudo dpkg -r line
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.target }}
+          path: package-smoke/*
+          if-no-files-found: error
+
+  deb-install:
+    name: Debian/Ubuntu ARM64 install (${{ matrix.image }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:bookworm-slim
+          - ubuntu:24.04
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Download the ARM64 Debian package
+        uses: actions/download-artifact@v4
+        with:
+          name: packages-aarch64-unknown-linux-musl
+          path: pkg
+
+      - name: Write the in-container install script
+        run: |
+          cat > install-smoke.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends /tmp/line.deb > /dev/null
+
+          # The declared dependency must have pulled in the OpenSSH client.
+          dpkg -s openssh-client > /dev/null
+
+          # The static build must not depend on the image glibc.
+          LDD_OUTPUT="$(ldd /usr/bin/line 2>&1 || true)"
+          if ! printf '%s\n' "$LDD_OUTPUT" | grep -Eq 'statically linked|not a dynamic executable'; then
+            echo "ARM64 package unexpectedly links against the system libc" >&2
+            printf '%s\n' "$LDD_OUTPUT" >&2
+            exit 1
+          fi
+
+          line --version | grep -Eq '^line [0-9]+\.[0-9]+\.[0-9]+'
+          SCRIPT
+          cat install-smoke.sh
+
+      - name: Install and run the package in ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          DEB="$(find pkg -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$DEB"
+          docker run --rm \
+            -v "$PWD/${DEB}:/tmp/line.deb:ro" \
+            -v "$PWD/install-smoke.sh:/tmp/install-smoke.sh:ro" \
+            "${{ matrix.image }}" \
+            bash /tmp/install-smoke.sh
