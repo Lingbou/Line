@@ -12,7 +12,7 @@ mod store;
 
 pub use keys::{KeyError, KeyPair, KeyResult, KeyStore};
 pub use model::{
-    AuthMethod, CURRENT_SCHEMA_VERSION, Profile, Profiles, ValidationError,
+    AuthMethod, CURRENT_SCHEMA_VERSION, JumpHop, Profile, Profiles, ValidationError,
     profile_name_is_path_safe, profile_names_equal,
 };
 pub use store::{ConfigError, ConfigStore, Result};

@@ -87,6 +87,9 @@ pub enum SshError {
 
     #[error("invalid SSH profile: {0}")]
     InvalidProfile(#[from] ValidationError),
+
+    #[error("multi-hop ProxyJump is not supported yet")]
+    UnsupportedJumpChain,
 }
 
 /// The observable outcome of an SSH child process.
@@ -132,6 +135,7 @@ pub(super) mod test_support {
             host: "example.com".into(),
             port: 2222,
             username: "alice".into(),
+            jump_chain: Vec::new(),
             auth,
         }
     }

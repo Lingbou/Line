@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::config::{Profile, profile_names_equal};
+use crate::config::{JumpHop, Profile, profile_names_equal};
 
 use super::DEFAULT_PORT;
 
@@ -111,6 +111,76 @@ pub(super) fn next_default_name(profiles: &[Profile]) -> String {
         .expect("an unused numeric default connection name always exists")
 }
 
+/// Parse one OpenSSH `-J` endpoint into a Line jump hop.
+pub(super) fn parse_jump_hop(value: &str) -> Result<JumpHop, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("Jump host cannot be empty".into());
+    }
+    if value.contains(',') {
+        return Err("Multiple jump hosts are not supported yet".into());
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err("Jump host cannot contain whitespace or control characters".into());
+    }
+
+    let (username, host_port) = match value.rsplit_once('@') {
+        Some((username, host_port)) => {
+            let username = username.trim();
+            if username.is_empty() {
+                return Err("Jump username cannot be empty".into());
+            }
+            (Some(username.to_owned()), host_port)
+        }
+        None => (None, value),
+    };
+    let (host, port) = parse_jump_host_port(host_port)?;
+    Ok(JumpHop {
+        username,
+        host,
+        port,
+    })
+}
+
+fn parse_jump_host_port(value: &str) -> Result<(String, u16), String> {
+    if let Some(rest) = value.strip_prefix('[') {
+        let Some(close) = rest.find(']') else {
+            return Err("Jump host has an unclosed IPv6 bracket".into());
+        };
+        let host = rest[..close].to_owned();
+        let suffix = &rest[close + 1..];
+        let port = if suffix.is_empty() {
+            22
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            parse_port(port)?
+        } else {
+            return Err("Jump host has an invalid port suffix".into());
+        };
+        return Ok((host, port));
+    }
+
+    if value.matches(':').count() == 1
+        && let Some((host, port)) = value.rsplit_once(':')
+        && !port.is_empty()
+    {
+        return Ok((host.to_owned(), parse_port(port)?));
+    }
+    Ok((value.to_owned(), 22))
+}
+
+fn parse_port(value: &str) -> Result<u16, String> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| "Jump port must be a number between 1 and 65535")?;
+    if port == 0 {
+        return Err("Jump port must be a number between 1 and 65535".into());
+    }
+    Ok(port)
+}
+
 /// Parse convenient SSH invocation and endpoint shorthands pasted into the Host field.
 ///
 /// Automatically handles:
@@ -122,16 +192,26 @@ pub(super) fn parse_endpoint_shorthand(
     host: &mut String,
     username: &mut String,
     port: &mut String,
-) {
+) -> Result<Option<String>, String> {
     let mut text = host.trim();
     if let Some(without_ssh) = text.strip_prefix("ssh ") {
         text = without_ssh.trim();
     }
     let parts: Vec<&str> = text.split_whitespace().collect();
     let mut remaining_parts = Vec::new();
+    let mut jump = None;
     let mut i = 0;
     while i < parts.len() {
-        if parts[i] == "-p" && i + 1 < parts.len() && parts[i + 1].parse::<u16>().is_ok() {
+        if parts[i] == "-J" {
+            if jump.is_some() {
+                return Err("Only one -J option can be configured".into());
+            }
+            let Some(value) = parts.get(i + 1) else {
+                return Err("Jump host is missing after -J".into());
+            };
+            jump = Some((*value).to_owned());
+            i += 2;
+        } else if parts[i] == "-p" && i + 1 < parts.len() && parts[i + 1].parse::<u16>().is_ok() {
             *port = parts[i + 1].to_owned();
             i += 2;
         } else if let Some(suffix) = parts[i].strip_prefix("-p")
@@ -166,7 +246,7 @@ pub(super) fn parse_endpoint_shorthand(
                 }
             }
             *host = address;
-            return;
+            return Ok(jump);
         }
     } else if *port == DEFAULT_PORT.to_string()
         && host_candidate.matches(':').count() == 1
@@ -176,8 +256,9 @@ pub(super) fn parse_endpoint_shorthand(
         if suffix.parse::<u16>().is_ok() {
             *port = suffix.to_owned();
             *host = host_candidate[..colon].to_owned();
-            return;
+            return Ok(jump);
         }
     }
     *host = host_candidate.to_owned();
+    Ok(jump)
 }

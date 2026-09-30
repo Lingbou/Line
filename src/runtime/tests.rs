@@ -62,6 +62,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Key {
                 source: KeySource::Import,
                 value: private_key.display().to_string(),
@@ -105,6 +106,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Key {
                 source: KeySource::Import,
                 value: path.display().to_string(),
@@ -129,6 +131,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Key {
                 source: KeySource::Import,
                 value: second_key.display().to_string(),
@@ -155,6 +158,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Key {
                 source: KeySource::Import,
                 value: private_key.display().to_string(),
@@ -188,6 +192,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Key {
                 source: KeySource::Import,
                 value: private_key.display().to_string(),
@@ -210,6 +215,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Key {
                 source: KeySource::Existing,
                 value: first_private.display().to_string(),
@@ -228,6 +234,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Password {
                 password: "saved-password".into(),
             },
@@ -247,6 +254,7 @@ mod explicit_key_import {
             host: "changed.example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Password {
                 password: "saved-password".into(),
             },
@@ -271,6 +279,7 @@ mod explicit_key_import {
             host: "example.org".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Key {
                 source: KeySource::Import,
                 value: private_key.display().to_string(),

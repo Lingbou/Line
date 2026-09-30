@@ -303,6 +303,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 22,
             username: "root".into(),
+            jump_chain: Vec::new(),
             auth: AuthMethod::Password {
                 password: "pw".into(),
             },

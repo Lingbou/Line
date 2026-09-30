@@ -20,6 +20,7 @@ fn profile(name: &str) -> Profile {
         host: "example.com".into(),
         port: 22,
         username: "root".into(),
+        jump_chain: Vec::new(),
         auth: AuthMethod::Key {
             private_key: key_directory.join("key"),
             public_key: key_directory.join("key.pub"),

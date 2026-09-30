@@ -6,6 +6,82 @@ use thiserror::Error;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
+/// One intermediate SSH endpoint used before the target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JumpHop {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub host: String,
+    pub port: u16,
+}
+
+impl JumpHop {
+    #[must_use]
+    pub fn destination(&self) -> String {
+        match &self.username {
+            Some(username) => format!("{username}@{}", self.host),
+            None => self.host.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn authority(&self) -> String {
+        let host = if self.host.contains(':') && self.port != 22 {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let endpoint = match &self.username {
+            Some(username) => format!("{username}@{host}"),
+            None => host,
+        };
+        if self.port == 22 {
+            endpoint
+        } else {
+            format!("{endpoint}:{}", self.port)
+        }
+    }
+
+    fn validate(&self) -> std::result::Result<(), ValidationError> {
+        if self.host.trim().is_empty() {
+            return Err(ValidationError::InvalidJumpChain(
+                "jump host cannot be empty".into(),
+            ));
+        }
+        if self
+            .host
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        {
+            return Err(ValidationError::InvalidJumpChain(
+                "jump host cannot contain whitespace or control characters".into(),
+            ));
+        }
+        if let Some(username) = &self.username {
+            if username.trim().is_empty() {
+                return Err(ValidationError::InvalidJumpChain(
+                    "jump username cannot be empty".into(),
+                ));
+            }
+            if username
+                .chars()
+                .any(|character| character.is_control() || character.is_whitespace())
+            {
+                return Err(ValidationError::InvalidJumpChain(
+                    "jump username cannot contain whitespace or control characters".into(),
+                ));
+            }
+        }
+        if self.port == 0 {
+            return Err(ValidationError::InvalidJumpChain(
+                "jump port must be between 1 and 65535".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A saved SSH connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +93,8 @@ pub struct Profile {
     pub host: String,
     pub port: u16,
     pub username: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jump_chain: Vec<JumpHop>,
     pub auth: AuthMethod,
 }
 
@@ -36,6 +114,7 @@ impl Profile {
             host: host.into(),
             port,
             username: username.into(),
+            jump_chain: Vec::new(),
             auth,
         }
     }
@@ -72,6 +151,9 @@ impl Profile {
         }
         if self.port == 0 {
             return Err(ValidationError::InvalidPort);
+        }
+        for hop in &self.jump_chain {
+            hop.validate()?;
         }
         if let AuthMethod::Password { password } = &self.auth
             && password.contains(['\0', '\r', '\n'])
@@ -284,6 +366,8 @@ pub enum ValidationError {
     KeyOutsideDirectory(PathBuf),
     #[error("key paths for profile {0:?} must be keys/<profile name>/key and key.pub")]
     InvalidKeyLayout(String),
+    #[error("invalid jump chain: {0}")]
+    InvalidJumpChain(String),
 }
 
 fn validate_key_relative_path(path: &Path) -> std::result::Result<(), ValidationError> {

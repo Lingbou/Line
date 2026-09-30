@@ -4,7 +4,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::config::{AuthMethod, Profile};
+use crate::config::{AuthMethod, JumpHop, Profile};
 
 use super::*;
 
@@ -15,6 +15,7 @@ fn profile(id: &str, name: &str) -> Profile {
         host: "example.com".into(),
         port: 22,
         username: "root".into(),
+        jump_chain: Vec::new(),
         auth: AuthMethod::Password {
             password: "secret".into(),
         },
@@ -681,6 +682,74 @@ fn endpoint_shorthand_parses_ssh_and_port_flags() {
             ..
         }) if username == "deploy" && port == 2222 && host == "10.0.0.1"
     ));
+}
+
+#[test]
+fn host_command_with_single_jump_populates_profile_draft() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.host = "ssh -J root@124.222.134.112 root@10.77.0.2".into();
+    form.auth = AuthDraft::Password {
+        password: "secret".into(),
+    };
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        action,
+        AppAction::Save(ProfileDraft {
+            username,
+            host,
+            jump_chain,
+            ..
+        }) if username == "root"
+            && host == "10.77.0.2"
+            && jump_chain == vec![JumpHop {
+                username: Some("root".into()),
+                host: "124.222.134.112".into(),
+                port: 22,
+            }]
+    ));
+}
+
+#[test]
+fn editing_profile_keeps_single_jump_chain() {
+    let mut existing = profile("1", "one");
+    existing.jump_chain = vec![JumpHop {
+        username: Some("root".into()),
+        host: "124.222.134.112".into(),
+        port: 22,
+    }];
+    let mut app = App::new(vec![existing]);
+    app.begin_edit();
+
+    let draft = app.form().unwrap().draft(app.profiles()).unwrap();
+
+    assert_eq!(
+        draft.jump_chain,
+        vec![JumpHop {
+            username: Some("root".into()),
+            host: "124.222.134.112".into(),
+            port: 22,
+        }]
+    );
+}
+
+#[test]
+fn multi_hop_paste_is_rejected_until_supported() {
+    let mut app = App::new(Vec::new());
+    let form = app.form_mut().unwrap();
+    form.host = "ssh -J root@jump-a,root@jump-b root@10.77.0.2".into();
+    form.auth = AuthDraft::Password {
+        password: "secret".into(),
+    };
+
+    let action = app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(action, AppAction::None);
+    assert_eq!(
+        app.form().unwrap().validation_error.as_deref(),
+        Some("Multiple jump hosts are not supported yet")
+    );
 }
 
 #[test]

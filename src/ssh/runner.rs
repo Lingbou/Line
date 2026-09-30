@@ -159,6 +159,82 @@ impl SshRunner {
         Ok(session_result(status, stderr_tail))
     }
 
+    fn proxy_command(
+        &self,
+        profile: &Profile,
+        jump: &crate::config::JumpHop,
+        system_config: &str,
+        known_hosts: &Path,
+    ) -> String {
+        let mut args = vec![
+            self.ssh_program.to_string_lossy().into_owned(),
+            "-F".into(),
+            system_config.into(),
+            "-o".into(),
+            format!("ConnectTimeout={CONNECT_TIMEOUT_SECONDS}"),
+            "-o".into(),
+            format!("UserKnownHostsFile={}", known_hosts.display()),
+            "-o".into(),
+            "GlobalKnownHostsFile=/dev/null".into(),
+            "-o".into(),
+            "StrictHostKeyChecking=accept-new".into(),
+            "-o".into(),
+            "LogLevel=ERROR".into(),
+            "-o".into(),
+            "ConnectionAttempts=1".into(),
+        ];
+        match &profile.auth {
+            AuthMethod::Key { private_key, .. } => {
+                args.extend([
+                    "-i".into(),
+                    resolve_path(&self.line_dir, private_key)
+                        .to_string_lossy()
+                        .into_owned(),
+                    "-o".into(),
+                    "IdentitiesOnly=yes".into(),
+                    "-o".into(),
+                    "IdentityAgent=none".into(),
+                    "-o".into(),
+                    "BatchMode=yes".into(),
+                    "-o".into(),
+                    "PreferredAuthentications=publickey".into(),
+                    "-o".into(),
+                    "PubkeyAuthentication=yes".into(),
+                    "-o".into(),
+                    "PasswordAuthentication=no".into(),
+                    "-o".into(),
+                    "KbdInteractiveAuthentication=no".into(),
+                ]);
+            }
+            AuthMethod::Password { .. } => {
+                args.extend([
+                    "-o".into(),
+                    "BatchMode=no".into(),
+                    "-o".into(),
+                    "PreferredAuthentications=password,keyboard-interactive".into(),
+                    "-o".into(),
+                    "PubkeyAuthentication=no".into(),
+                    "-o".into(),
+                    "PasswordAuthentication=yes".into(),
+                    "-o".into(),
+                    "KbdInteractiveAuthentication=yes".into(),
+                    "-o".into(),
+                    "NumberOfPasswordPrompts=1".into(),
+                ]);
+            }
+        }
+        args.extend(["-W".into(), "%h:%p".into()]);
+        if jump.port != 22 {
+            args.extend(["-p".into(), jump.port.to_string()]);
+        }
+        args.push("--".into());
+        args.push(jump.destination());
+        args.iter()
+            .map(|argument| shell_quote(argument))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     fn configure_command(&self, command: &mut Command, profile: &Profile) {
         let known_hosts = self.line_dir.join("known_hosts");
         let destination = destination(profile);
@@ -201,6 +277,13 @@ impl SshRunner {
             .arg("-tt")
             .arg("-p")
             .arg(profile.port.to_string());
+
+        if let Some(jump) = profile.jump_chain.first() {
+            command.arg("-o").arg(format!(
+                "ProxyCommand={}",
+                self.proxy_command(profile, jump, system_config, &known_hosts)
+            ));
+        }
 
         match &profile.auth {
             AuthMethod::Key { private_key, .. } => {
@@ -271,6 +354,10 @@ impl SshRunner {
         // End option parsing before accepting a host read from a JSON profile.
         command.arg("--").arg(destination);
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\''"))
 }
 
 fn ensure_supported_openssh(program: &Path) -> Result<(), SshError> {
@@ -373,6 +460,41 @@ mod tests {
     }
 
     #[test]
+    fn single_jump_chain_is_passed_to_openssh() {
+        let dir = TempDir::new().expect("temp dir");
+        let record = dir.path().join("record");
+        let fake = fake_ssh(
+            &dir,
+            &record,
+            r#"
+            printf '%s\n' "$@" > "$RECORD"
+            exit 0
+            "#,
+        );
+        let line_dir = dir.path().join("line");
+        let runner = SshRunner::for_test(&line_dir, fake, "ssh-keygen", "/bin/false");
+        let mut target = profile(AuthMethod::Key {
+            private_key: PathBuf::from("keys/Example/key"),
+            public_key: PathBuf::from("keys/Example/key.pub"),
+        });
+        target.jump_chain = vec![crate::config::JumpHop {
+            username: Some("root".into()),
+            host: "124.222.134.112".into(),
+            port: 22,
+        }];
+
+        runner.connect(&target).expect("ssh invocation");
+
+        let args = fs::read_to_string(record).expect("recorded args");
+        assert!(args.lines().any(|arg| {
+            arg.starts_with("ProxyCommand=")
+                && arg.contains("-W")
+                && arg.contains("'%h:%p'")
+                && arg.contains("root@124.222.134.112")
+        }));
+    }
+
+    #[test]
     fn key_profile_uses_isolated_openssh_options_and_returns_status() {
         let dir = TempDir::new().expect("temp dir");
         let record = dir.path().join("record");
@@ -428,6 +550,7 @@ mod tests {
                 .any(|pair| pair == ["-i", expected_key.as_str()])
         );
         assert!(args.contains(&"IdentityAgent=none"));
+        assert!(!args.contains(&"-J"));
         assert_eq!(args.last().copied(), Some("alice@example.com"));
     }
 

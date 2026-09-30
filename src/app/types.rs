@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::config::JumpHop;
+
 /// The default SSH port used when a form is opened.
 pub const DEFAULT_PORT: u16 = 22;
 
@@ -82,6 +84,7 @@ pub struct ProfileDraft {
     pub host: String,
     pub port: u16,
     pub username: String,
+    pub jump_chain: Vec<JumpHop>,
     pub auth: AuthDraft,
 }
 

@@ -83,7 +83,10 @@ pub(super) fn save_profile(
             .clone()
             .ok_or_else(|| "Edited connection has no stable id".to_owned())?,
     };
-    let profile = Profile::with_id(id, draft.name, draft.host, draft.port, draft.username, auth);
+    let mut profile =
+        Profile::with_id(id, draft.name, draft.host, draft.port, draft.username, auth);
+    profile.jump_chain = draft.jump_chain;
+
     let mode = draft.mode;
     let saved_id = profile.id.clone();
     let latest = store

@@ -5,7 +5,7 @@ mod unix {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use line::config::{AuthMethod, ConfigStore, Profile, Profiles};
+    use line::config::{AuthMethod, ConfigStore, JumpHop, Profile, Profiles};
     use tempfile::tempdir;
 
     #[test]
@@ -86,6 +86,7 @@ mod unix {
                 host: "192.0.2.10".into(),
                 port: 2222,
                 username: "root".into(),
+                jump_chain: Vec::new(),
                 auth: AuthMethod::Password {
                     password: "correct horse".into(),
                 },
@@ -109,6 +110,70 @@ mod unix {
     }
 
     #[test]
+    fn jump_chain_round_trips_through_json() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join(".line");
+        let store = ConfigStore::at(&root);
+        let profiles = Profiles {
+            profiles: vec![Profile {
+                id: "prod".into(),
+                name: "Production".into(),
+                host: "10.77.0.2".into(),
+                port: 22,
+                username: "root".into(),
+                jump_chain: vec![JumpHop {
+                    username: Some("root".into()),
+                    host: "124.222.134.112".into(),
+                    port: 22,
+                }],
+                auth: AuthMethod::Password {
+                    password: "pw".into(),
+                },
+            }],
+            ..Profiles::default()
+        };
+
+        store.save(&profiles).unwrap();
+        let loaded = store.load().unwrap();
+
+        assert_eq!(loaded, profiles);
+        assert_eq!(
+            loaded.profiles[0].jump_chain[0].authority(),
+            "root@124.222.134.112"
+        );
+        assert!(
+            fs::read_to_string(root.join("profiles.json"))
+                .unwrap()
+                .contains("jump_chain")
+        );
+    }
+
+    #[test]
+    fn profiles_without_a_jump_chain_remain_readable() {
+        let temp = tempdir().unwrap();
+        let store = ConfigStore::at(temp.path().join(".line"));
+        store.load().unwrap();
+        fs::write(
+            store.profiles_path(),
+            r#"{
+                "schema_version": 1,
+                "profiles": [{
+                    "id": "one",
+                    "name": "One",
+                    "host": "one.example",
+                    "port": 22,
+                    "username": "root",
+                    "auth": {"type": "password", "password": "pw"}
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = store.load().unwrap();
+        assert!(loaded.profiles[0].jump_chain.is_empty());
+    }
+
+    #[test]
     fn second_save_keeps_previous_json_as_backup() {
         let temp = tempdir().unwrap();
         let store = ConfigStore::at(temp.path().join(".line"));
@@ -119,6 +184,7 @@ mod unix {
                 host: "one.example".into(),
                 username: "alice".into(),
                 port: 22,
+                jump_chain: Vec::new(),
                 auth: AuthMethod::Password {
                     password: "pw1".into(),
                 },
@@ -253,6 +319,7 @@ mod unix {
             host: "example.org".into(),
             username: "root".into(),
             port: 22,
+            jump_chain: Vec::new(),
             auth: AuthMethod::Password {
                 password: "pw".into(),
             },

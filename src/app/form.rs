@@ -1,8 +1,8 @@
-use crate::config::{AuthMethod, Profile, profile_name_is_path_safe, profile_names_equal};
+use crate::config::{AuthMethod, JumpHop, Profile, profile_name_is_path_safe, profile_names_equal};
 
 use super::{
     AuthDraft, DEFAULT_PORT, FormField, KeySource, ProfileDraft, SaveMode,
-    helpers::{parse_endpoint_shorthand, path_to_string},
+    helpers::{parse_endpoint_shorthand, parse_jump_hop, path_to_string},
 };
 
 impl AuthDraft {
@@ -32,6 +32,7 @@ pub struct FormState {
     pub host: String,
     pub port: String,
     pub username: String,
+    pub jump_chain: Vec<JumpHop>,
     pub auth: AuthDraft,
     pub field: FormField,
     pub cursor: usize,
@@ -52,6 +53,7 @@ impl std::fmt::Debug for FormState {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)
+            .field("jump_chain", &self.jump_chain)
             .field("auth", &self.auth)
             .field("field", &self.field)
             .field("cursor", &self.cursor)
@@ -71,6 +73,7 @@ impl FormState {
             host: String::new(),
             port: DEFAULT_PORT.to_string(),
             username: "root".to_owned(),
+            jump_chain: Vec::new(),
             auth: AuthDraft::Password {
                 password: String::new(),
             },
@@ -99,6 +102,7 @@ impl FormState {
             host: profile.host.clone(),
             port: profile.port.to_string(),
             username: profile.username.clone(),
+            jump_chain: profile.jump_chain.clone(),
             auth,
             field: FormField::Name,
             cursor: profile.name.chars().count(),
@@ -268,7 +272,7 @@ impl FormState {
         let mut port_text = self.port.trim().to_owned();
         // Permit the familiar `user@host:port` shorthand when a dedicated
         // field was left blank. Bracketed IPv6 is handled as well.
-        parse_endpoint_shorthand(&mut host, &mut username, &mut port_text);
+        let jump_from_host = parse_endpoint_shorthand(&mut host, &mut username, &mut port_text)?;
         if username.is_empty() {
             username = "root".to_owned();
         }
@@ -284,6 +288,11 @@ impl FormState {
         if port == 0 {
             return Err("Port must be a number between 1 and 65535".into());
         }
+
+        let jump_chain = match jump_from_host {
+            Some(spec) => vec![parse_jump_hop(&spec)?],
+            None => self.jump_chain.clone(),
+        };
 
         let auth = match &self.auth {
             AuthDraft::Password { password } => {
@@ -326,6 +335,7 @@ impl FormState {
             host,
             port,
             username,
+            jump_chain,
             auth,
         })
     }
