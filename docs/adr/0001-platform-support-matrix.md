@@ -6,7 +6,7 @@ Line v0.2 targets the following platform matrix:
 
 - Linux x86_64 and aarch64, with `.deb`, `.rpm`, and static musl single-file releases.
 - Arch Linux and Alpine Linux through the static musl release, installed next to the distribution's own OpenSSH programs.
-- macOS on both Intel and Apple Silicon, shipped as a universal2 artifact and installable through Homebrew.
+- macOS on both Intel and Apple Silicon, shipped as a single universal2 tarball.
 - Native Windows x86_64 and arm64 binaries, using the system OpenSSH client in Windows Terminal.
 - WSL uses the Linux artifacts: `.deb`, `.rpm`, or the static tarball depending on the distribution.
 
@@ -41,6 +41,15 @@ installed.
 
 Updating on Arch and Alpine means unpacking the newer release tarball over
 the installed binary; there is no package database entry to upgrade in place.
+
+macOS uses the system OpenSSH that ships with the OS, so the release page is
+the only install path in v0.2: users unpack the universal2 tarball and put
+`line` on their `PATH`. A Homebrew formula is a follow-up for the same reason
+as the AUR entry below — it needs a tap that a maintainer owns and that can be
+smoke-tested automatically, rather than a build step CI can drive on its own.
+
+The macOS artifact is built by compiling both Apple targets on a macOS runner
+and merging them with `lipo`, so one download runs on Intel and Apple Silicon.
 
 AUR and `.apk` packaging are follow-ups, not v0.2 deliverables. Revisit the AUR
 when a maintainer owns the AUR repository and the PKGBUILD can be smoke-tested

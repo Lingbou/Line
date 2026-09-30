@@ -111,9 +111,57 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  macos:
+    name: Build universal2 macOS
+    needs: checks
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Merge into one universal binary
+        run: |
+          mkdir -p target/universal2-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/line \
+            target/x86_64-apple-darwin/release/line \
+            -output target/universal2-apple-darwin/release/line
+          lipo -info target/universal2-apple-darwin/release/line | grep -q 'x86_64 arm64'
+
+      - name: Smoke test the universal binary
+        run: |
+          BIN="target/universal2-apple-darwin/release/line"
+          "$BIN" --version
+          "$BIN" --help > /dev/null
+
+      - name: Package Tarball (.tar.gz)
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          bash packaging/make-tarball.sh "${TAG#v}" universal2-apple-darwin dist
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-universal2-apple-darwin
+          path: dist/*
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, macos]
     runs-on: ubuntu-latest
     steps:
       - name: Download packaged artifacts

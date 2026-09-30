@@ -69,6 +69,12 @@ sudo apk add openssh-client openssh-keygen
 
 静态构建不需要发行版的 libc 包，因此 Line 本身无需额外安装 `glibc` 或 `musl`。
 
+### macOS（Intel 与 Apple Silicon）
+
+从 [Releases](https://github.com/Lingbou/Line/releases) 下载 `line-v<version>-universal2-apple-darwin.tar.gz`，一个包同时支持两种架构。解压后将 `line` 放到 `/usr/local/bin/` 或 `~/.local/bin/`。
+
+Line 直接使用 macOS 自带的 OpenSSH，无需额外安装。
+
 ### 源码编译安装
 
 依赖要求：Rust (1.88+)、系统自带的 OpenSSH 与 `ssh-keygen`。保存密码连接使用 `SSH_ASKPASS`，需要 OpenSSH 8.4 或更高版本。

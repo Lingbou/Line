@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文说明](README_CN.md)
 
-Line is a lightweight Linux TUI for quickly opening SSH connections without repeatedly typing hostnames, usernames, or passwords.
+Line is a lightweight TUI for quickly opening SSH connections without repeatedly typing hostnames, usernames, or passwords.
 
 ```text
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -68,6 +68,12 @@ sudo apk add openssh-client openssh-keygen
 ```
 
 The static build needs no libc package from either distribution, so no `glibc` or `musl` dependency has to be installed for Line itself.
+
+### macOS (Intel and Apple Silicon)
+
+Download `line-v<version>-universal2-apple-darwin.tar.gz` from [Releases](https://github.com/Lingbou/Line/releases); one tarball covers both architectures. Extract it and move `line` to `/usr/local/bin/` or `~/.local/bin/`.
+
+Line uses the OpenSSH that ships with macOS, so there is nothing else to install.
 
 ### Build from Source
 

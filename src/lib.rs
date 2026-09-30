@@ -1,6 +1,6 @@
 //! # Line
 //!
-//! A lightweight, high-performance Linux TUI SSH connection manager written in Rust.
+//! A lightweight, high-performance TUI SSH connection manager written in Rust.
 //!
 //! Line provides a responsive terminal launcher for saving and opening SSH connections
 //! without repeatedly typing hostnames, usernames, or passwords.
@@ -36,5 +36,5 @@ pub mod ui;
 mod platform;
 mod private_fs;
 
-#[cfg(not(target_os = "linux"))]
-compile_error!("Line currently supports Linux only");
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("Line currently supports Linux and macOS");

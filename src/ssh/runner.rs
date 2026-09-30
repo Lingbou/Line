@@ -716,7 +716,8 @@ mod tests {
         // target's.
         assert!(proxy.contains("keys/Bastion/key"), "{proxy}");
         assert!(!proxy.contains("keys/Example/key"), "{proxy}");
-        assert!(proxy.contains("'/tmp/"), "{proxy}");
+        // The program itself stays quoted, whatever the platform temp path is.
+        assert!(proxy.starts_with("ProxyCommand='"), "{proxy}");
     }
 
     #[test]

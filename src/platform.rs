@@ -28,28 +28,13 @@ impl Drop for InterruptGuard {
     }
 }
 
+/// Platform decisions that are not simply POSIX.
+///
+/// Everything the supported Unix platforms share lives in this trait as a
+/// default implementation, so a new platform only states what actually
+/// differs. Linux and macOS differ in exactly one place today: how the
+/// descendants of a running child are discovered.
 pub(crate) trait Platform: Send + Sync {
-    fn config_root(&self) -> Result<PathBuf, PlatformError>;
-    fn ssh_program(&self) -> PathBuf;
-    fn ssh_keygen_program(&self) -> PathBuf;
-    fn system_ssh_config(&self) -> PathBuf;
-    fn null_device(&self) -> PathBuf;
-    fn set_private_mode(&self, path: &Path, mode: u32) -> io::Result<()>;
-    fn reset_child_signals(&self, command: &mut Command);
-    fn install_interrupt_guard(&self) -> InterruptGuard;
-    fn is_interrupt_signal(&self, signal: Option<i32>) -> bool;
-    fn terminate_child_tree(&self, child: &mut Child);
-}
-
-pub(crate) fn current() -> &'static dyn Platform {
-    &LINUX
-}
-
-static LINUX: LinuxPlatform = LinuxPlatform;
-
-struct LinuxPlatform;
-
-impl Platform for LinuxPlatform {
     fn config_root(&self) -> Result<PathBuf, PlatformError> {
         config_root_from(|key| env::var_os(key))
     }
@@ -62,6 +47,11 @@ impl Platform for LinuxPlatform {
         PathBuf::from("ssh-keygen")
     }
 
+    /// The administrator's OpenSSH client policy.
+    ///
+    /// Both platforms install it at the same path; when it is missing Line
+    /// points OpenSSH at the null device so the user's own `~/.ssh/config`
+    /// still cannot change what a saved profile means.
     fn system_ssh_config(&self) -> PathBuf {
         let path = Path::new("/etc/ssh/ssh_config");
         if path.is_file() {
@@ -81,16 +71,13 @@ impl Platform for LinuxPlatform {
     }
 
     fn reset_child_signals(&self, command: &mut Command) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                command.pre_exec(|| {
-                    libc::signal(libc::SIGINT, libc::SIG_DFL);
-                    libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-                    Ok(())
-                });
-            }
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+                Ok(())
+            });
         }
     }
 
@@ -104,8 +91,42 @@ impl Platform for LinuxPlatform {
         matches!(signal, Some(libc::SIGINT) | Some(libc::SIGQUIT))
     }
 
+    fn terminate_child_tree(&self, child: &mut Child);
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn current() -> &'static dyn Platform {
+    &LINUX
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn current() -> &'static dyn Platform {
+    &MACOS
+}
+
+#[cfg(target_os = "linux")]
+static LINUX: LinuxPlatform = LinuxPlatform;
+
+#[cfg(target_os = "macos")]
+static MACOS: MacPlatform = MacPlatform;
+
+#[cfg(target_os = "linux")]
+struct LinuxPlatform;
+
+#[cfg(target_os = "linux")]
+impl Platform for LinuxPlatform {
     fn terminate_child_tree(&self, child: &mut Child) {
-        terminate_linux_child_tree(child);
+        terminate_child_tree(child, collect_linux_descendants);
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct MacPlatform;
+
+#[cfg(target_os = "macos")]
+impl Platform for MacPlatform {
+    fn terminate_child_tree(&self, child: &mut Child) {
+        terminate_child_tree(child, collect_macos_descendants);
     }
 }
 
@@ -117,10 +138,15 @@ fn config_root_from(get_env: impl Fn(&str) -> Option<OsString>) -> Result<PathBu
     Ok(PathBuf::from(home).join(".line"))
 }
 
-fn terminate_linux_child_tree(child: &mut Child) {
+/// Kill a child and everything it started.
+///
+/// A cancelled `ssh` can leave `ProxyCommand` descendants holding a duplicate
+/// of stderr, which would block terminal restoration, so the tree is collected
+/// first and killed leaves-first.
+fn terminate_child_tree(child: &mut Child, collect: fn(i32, &mut Vec<i32>)) {
     let root = child.id() as i32;
     let mut descendants = Vec::new();
-    collect_linux_descendants(root, &mut descendants);
+    collect(root, &mut descendants);
     unsafe {
         libc::kill(root, libc::SIGKILL);
         for pid in descendants.into_iter().rev() {
@@ -129,6 +155,7 @@ fn terminate_linux_child_tree(child: &mut Child) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn collect_linux_descendants(parent: i32, descendants: &mut Vec<i32>) {
     let path = format!("/proc/{parent}/task/{parent}/children");
     let Ok(children) = fs::read_to_string(path) else {
@@ -143,6 +170,27 @@ fn collect_linux_descendants(parent: i32, descendants: &mut Vec<i32>) {
         }
         descendants.push(child);
         collect_linux_descendants(child, descendants);
+    }
+}
+
+/// macOS has no `/proc`; libproc answers the same question.
+#[cfg(target_os = "macos")]
+fn collect_macos_descendants(parent: i32, descendants: &mut Vec<i32>) {
+    let mut buffer = [0i32; 256];
+    let capacity = std::mem::size_of_val(&buffer) as i32;
+    // SAFETY: the buffer is a live, correctly sized array of pid_t values and
+    // the size passed matches it, which is what libproc requires.
+    let written = unsafe { libc::proc_listchildpids(parent, buffer.as_mut_ptr().cast(), capacity) };
+    if written <= 0 {
+        return;
+    }
+    let count = (written as usize / std::mem::size_of::<i32>()).min(buffer.len());
+    for pid in buffer[..count].iter().copied() {
+        if pid <= 0 || descendants.contains(&pid) {
+            continue;
+        }
+        descendants.push(pid);
+        collect_macos_descendants(pid, descendants);
     }
 }
 
