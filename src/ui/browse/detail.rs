@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     app::App,
-    config::AuthMethod,
+    config::{AuthMethod, JumpHop, Profile},
     ui::{
         helpers::truncate,
         theme::{BORDER, MUTED, SUCCESS, TEXT},
@@ -66,4 +66,49 @@ pub(super) fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App, show_end
         ])
     };
     frame.render_widget(Paragraph::new(text), Rect::new(area.x, y, area.width, 1));
+
+    // The roomy detail block leaves one row under the key line. Narrow and
+    // dense layouts collapse to a single row and keep the address instead.
+    if area.height >= 3 {
+        let (label, value) = ("Jump", jump_chain(app, profile));
+        let line = Line::from(vec![
+            Span::styled(format!("{label}  "), Style::default().fg(MUTED)),
+            Span::styled(
+                truncate(
+                    &value,
+                    area.width.saturating_sub(label.len() as u16 + 2) as usize,
+                ),
+                Style::default().fg(TEXT),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(area.x, y + 1, area.width, 1),
+        );
+    }
+}
+
+/// Describe the jump chain in connection order.
+///
+/// Endpoint hops show the address they connect to; profile-backed hops show
+/// the referenced connection's name so a chain reads like the list it came
+/// from, and an unresolvable reference says so instead of rendering blank.
+fn jump_chain(app: &App, profile: &Profile) -> String {
+    if profile.jump_chain.is_empty() {
+        return "direct".to_owned();
+    }
+    profile
+        .jump_chain
+        .iter()
+        .map(|hop| match hop {
+            JumpHop::Endpoint(endpoint) => endpoint.authority(),
+            JumpHop::Profile(reference) => app
+                .profiles()
+                .iter()
+                .find(|candidate| candidate.id == reference.profile_id)
+                .map(|candidate| candidate.name.clone())
+                .unwrap_or_else(|| format!("missing ({})", reference.profile_id)),
+        })
+        .collect::<Vec<_>>()
+        .join(" → ")
 }

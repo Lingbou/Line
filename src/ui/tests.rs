@@ -7,7 +7,7 @@ use ratatui::{Terminal, backend::TestBackend};
 
 use crate::{
     app::{App, AppAction, AuthDraft, FormField, KeyChoice, KeySource, MouseTarget, Screen},
-    config::{AuthMethod, Profile},
+    config::{AuthMethod, JumpHop, Profile, ProfileHop},
 };
 
 use super::{browse::visible_profile_range, draw, form::existing_key_label, helpers::truncate};
@@ -266,6 +266,58 @@ fn browse_detail_shows_the_connection_key_directory() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("Production/key"));
+}
+
+#[test]
+fn browse_detail_shows_direct_and_profile_backed_jump_chains() {
+    let mut target = profile("Target");
+    target.jump_chain = vec![
+        JumpHop::endpoint(Some("root".into()), "124.222.134.112", 2222),
+        JumpHop::Profile(ProfileHop {
+            profile_id: "Bastion".into(),
+        }),
+    ];
+    let bastion = profile("Bastion");
+    let mut app = App::new(vec![bastion, target]);
+    app.select(1);
+
+    let backend = TestBackend::new(100, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(
+        rendered.contains("root@124.222.134.112:2222 → Bastion"),
+        "profile-backed hop should show the referenced name:\n{rendered}"
+    );
+}
+
+#[test]
+fn browse_detail_marks_a_missing_jump_reference() {
+    let mut target = profile("Target");
+    target.jump_chain = vec![JumpHop::Profile(ProfileHop {
+        profile_id: "deleted".into(),
+    })];
+    let mut app = App::new(vec![target]);
+
+    let backend = TestBackend::new(100, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(rendered.contains("missing (deleted)"), "{rendered}");
+}
+
+#[test]
+fn browse_detail_reports_a_direct_connection() {
+    let mut app = App::new(vec![profile("Production")]);
+
+    let backend = TestBackend::new(100, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(rendered.contains("Jump  direct"), "{rendered}");
 }
 
 #[test]
