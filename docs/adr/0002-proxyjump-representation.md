@@ -23,7 +23,9 @@ Multi-hop chains nest that command once per hop. The first hop is connected dire
 ssh -o ProxyCommand="ssh ... -W %h:%p -- first-hop" -W %h:%p -- second-hop
 ```
 
-OpenSSH expands `%h:%p` against the destination of the process whose configuration carries the ProxyCommand, so every level forwards to the right address without Line resolving the intermediate addresses itself.
+OpenSSH expands `%h:%p` against the destination of the process whose configuration carries the ProxyCommand, and it expands the whole value, nested quotes included. Line therefore doubles the percent signs of an embedded command, so the outer process turns `%%h:%%p` into `%h:%p` for the nested process to expand against its own destination. Without that escaping the second hop silently forwards to the target instead of the second hop, which connects but skips the hop.
+
+Each level of nesting escapes once more, so the innermost command of an n-hop chain carries its tokens escaped n-1 times.
 
 Because each hop runs its own `ssh`, a failure names the hop it could not reach. Line reads the OpenSSH diagnostics for whole host tokens, reports the first hop they single out as `jump i/n`, and leaves the raw diagnostics intact.
 

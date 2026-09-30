@@ -473,12 +473,20 @@ fn shell_quote(value: &str) -> String {
 /// keeps it in one argument while the inner quotes survive to the nested
 /// OpenSSH process. The value is already shell-quoted, so only the characters
 /// that stay live inside double quotes need escaping.
+///
+/// Percent signs are doubled as well. OpenSSH expands `%h`/`%p` against the
+/// destination of the connection whose value it is reading, and the whole
+/// nested command is part of that value, so an unescaped inner token would be
+/// expanded against the *target* and the inner hop would silently forward to
+/// the wrong host. `%%` survives the outer pass as `%`, which the nested
+/// OpenSSH process then expands against its own destination.
 fn shell_quote_nested(value: &str) -> String {
     let escaped = value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('$', "\\$")
-        .replace('`', "\\`");
+        .replace('`', "\\`")
+        .replace('%', "%%");
     format!("\"{escaped}\"")
 }
 
@@ -644,6 +652,10 @@ mod tests {
         // Each nested ssh carries its own forward and ordering separator.
         assert_eq!(proxy.matches("'-W'").count(), 2, "{proxy}");
         assert_eq!(proxy.matches("'--'").count(), 2, "{proxy}");
+        // The outer process expands its own tokens; the nested command keeps
+        // its tokens escaped so the nested ssh expands them against hop 2.
+        assert_eq!(proxy.matches("'%h:%p'").count(), 1, "{proxy}");
+        assert_eq!(proxy.matches("'%%h:%%p'").count(), 1, "{proxy}");
         assert!(
             proxy.find("'root@124.222.134.112'") < proxy.find("'root@10.77.0.2'"),
             "the first hop is nested inside the second: {proxy}"

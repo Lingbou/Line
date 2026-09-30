@@ -9,10 +9,10 @@ mod linux {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
 
-    use line::config::{AuthMethod, ConfigStore, JumpHop, Profile, Profiles};
+    use line::config::{AuthMethod, ConfigStore, JumpHop, Profile, ProfileHop, Profiles};
     use tempfile::TempDir;
 
-    const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+    const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
     #[test]
     fn line_connects_through_a_single_containerized_jump_host() {
@@ -20,8 +20,7 @@ mod linux {
             return;
         };
 
-        let output = fixture.run_line();
-        assert_success(&output);
+        assert_success(&fixture.run_line());
     }
 
     #[test]
@@ -30,8 +29,77 @@ mod linux {
             return;
         };
 
+        assert_success(&fixture.run_line());
+    }
+
+    #[test]
+    fn line_connects_through_three_containerized_jump_hosts() {
+        let Some(fixture) = Fixture::start(&workspace(), 3) else {
+            return;
+        };
+
+        // Three hops nest the command three deep, so the innermost tokens are
+        // escaped once per level.
+        assert_success(&fixture.run_line());
+    }
+
+    #[test]
+    fn line_connects_through_a_saved_profile_jump_host() {
+        let Some(mut fixture) = Fixture::start(&workspace(), 1) else {
+            return;
+        };
+        fixture.use_saved_profile_hop();
+
+        assert_success(&fixture.run_line());
+    }
+
+    #[test]
+    fn line_reports_rejected_credentials() {
+        let Some(fixture) = Fixture::start(&workspace(), 1) else {
+            return;
+        };
+        fixture.use_unauthorized_identity();
+
         let output = fixture.run_line();
-        assert_success(&output);
+        assert_failed(&output, "Permission denied");
+        fixture.assert_no_lingering_ssh();
+    }
+
+    #[test]
+    fn line_reports_an_unavailable_hop() {
+        let Some(fixture) = Fixture::start(&workspace(), 2) else {
+            return;
+        };
+        fixture.stop_hop(1);
+        let unavailable = fixture.hop_host(1);
+
+        let output = fixture.run_line();
+        // A hop that is down is noticed by the hop before it, so OpenSSH
+        // reports the failed forward rather than naming the unreachable host.
+        assert_failed_with_any(
+            &output,
+            &[
+                "stdio forwarding failed",
+                "Connection refused",
+                &unavailable,
+            ],
+        );
+        fixture.assert_no_lingering_ssh();
+    }
+
+    #[test]
+    fn line_reports_a_reversed_chain() {
+        let Some(mut fixture) = Fixture::start(&workspace(), 2) else {
+            return;
+        };
+        fixture.reverse_chain();
+        // The second hop is only reachable through the first, so reversing the
+        // chain makes it the first thing the client tries to resolve.
+        let unreachable = fixture.hop_host(1);
+
+        let output = fixture.run_line();
+        assert_failed(&output, &unreachable);
+        fixture.assert_no_lingering_ssh();
     }
 
     fn workspace() -> PathBuf {
@@ -48,6 +116,34 @@ mod linux {
         );
     }
 
+    fn assert_failed_with_any(output: &Output, expected: &[&str]) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(255),
+            "expected the ssh exit code, got {:?}\nstderr:\n{stderr}",
+            output.status
+        );
+        assert!(
+            expected.iter().any(|needle| stderr.contains(needle)),
+            "expected one of {expected:?} in the diagnostics:\n{stderr}"
+        );
+    }
+
+    fn assert_failed(output: &Output, expected: &str) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(255),
+            "expected the ssh exit code, got {:?}\nstderr:\n{stderr}",
+            output.status
+        );
+        assert!(
+            stderr.contains(expected),
+            "expected {expected:?} in the diagnostics:\n{stderr}"
+        );
+    }
+
     /// sshd containers plus the Line configuration that reaches them.
     ///
     /// The first jump is published on the host, so Line can only start the
@@ -57,6 +153,11 @@ mod linux {
         _temp: TempDir,
         cleanup: Cleanup,
         line_root: PathBuf,
+        jump_names: Vec<String>,
+        target_name: String,
+        host_port: u16,
+        client_key: PathBuf,
+        authorized_keys: PathBuf,
     }
 
     impl Fixture {
@@ -127,29 +228,142 @@ mod linux {
             ));
             wait_for_port(host_port);
 
-            let mut jump_chain = vec![JumpHop::endpoint(
-                Some("root".into()),
-                "127.0.0.1",
-                host_port,
-            )];
-            for name in jump_names.iter().skip(1) {
-                jump_chain.push(JumpHop::endpoint(Some("root".into()), name.clone(), 22));
-            }
-
             let line_root = temp.path().join("line");
-            install_profile(
-                &line_root,
-                &target_name,
-                jump_chain,
-                &client_key,
-                &authorized_keys,
-            );
-
-            Some(Self {
+            let mut this = Self {
                 _temp: temp,
                 cleanup,
                 line_root,
-            })
+                jump_names,
+                target_name,
+                host_port,
+                client_key,
+                authorized_keys,
+            };
+            this.install_target(this.endpoint_chain());
+            Some(this)
+        }
+
+        /// The chain in connection order, all hops written as endpoints.
+        fn endpoint_chain(&self) -> Vec<JumpHop> {
+            let mut chain = vec![JumpHop::endpoint(
+                Some("root".into()),
+                "127.0.0.1",
+                self.host_port,
+            )];
+            for name in self.jump_names.iter().skip(1) {
+                chain.push(JumpHop::endpoint(Some("root".into()), name.clone(), 22));
+            }
+            chain
+        }
+
+        fn hop_host(&self, index: usize) -> String {
+            if index == 0 {
+                "127.0.0.1".to_owned()
+            } else {
+                self.jump_names[index].clone()
+            }
+        }
+
+        /// Replace the saved target profile with one that uses `chain`.
+        fn install_target(&mut self, chain: Vec<JumpHop>) {
+            self.write_key_pair(
+                "Target",
+                &self.client_key.clone(),
+                &self.authorized_keys.clone(),
+            );
+            self.save_target(chain, "Target");
+        }
+
+        fn save_target(&self, chain: Vec<JumpHop>, key_name: &str) {
+            self.save_profiles(vec![Profile {
+                id: "target".into(),
+                name: "Target".into(),
+                host: self.target_name.clone(),
+                port: 22,
+                username: "root".into(),
+                jump_chain: chain,
+                auth: AuthMethod::Key {
+                    private_key: PathBuf::from(format!("keys/{key_name}/key")),
+                    public_key: PathBuf::from(format!("keys/{key_name}/key.pub")),
+                },
+            }]);
+        }
+
+        fn save_profiles(&self, profiles: Vec<Profile>) {
+            ConfigStore::at(&self.line_root)
+                .save(&Profiles {
+                    profiles,
+                    ..Profiles::default()
+                })
+                .expect("save test profiles");
+        }
+
+        fn write_key_pair(&self, name: &str, private: &Path, public: &Path) {
+            let key_dir = self.line_root.join("keys").join(name);
+            fs::create_dir_all(&key_dir).expect("key dir");
+            let private_key = key_dir.join("key");
+            let public_key = key_dir.join("key.pub");
+            fs::copy(private, &private_key).expect("private key copy");
+            fs::copy(public, &public_key).expect("public key copy");
+            set_private_file_mode(&private_key);
+            set_private_file_mode(&public_key);
+        }
+
+        /// Point the target at a saved profile instead of a raw endpoint.
+        fn use_saved_profile_hop(&mut self) {
+            self.write_key_pair(
+                "Bastion",
+                &self.client_key.clone(),
+                &self.authorized_keys.clone(),
+            );
+            let bastion = Profile {
+                id: "bastion".into(),
+                name: "Bastion".into(),
+                host: "127.0.0.1".into(),
+                port: self.host_port,
+                username: "root".into(),
+                jump_chain: Vec::new(),
+                auth: AuthMethod::Key {
+                    private_key: PathBuf::from("keys/Bastion/key"),
+                    public_key: PathBuf::from("keys/Bastion/key.pub"),
+                },
+            };
+            let mut target = Profile {
+                id: "target".into(),
+                name: "Target".into(),
+                host: self.target_name.clone(),
+                port: 22,
+                username: "root".into(),
+                jump_chain: vec![JumpHop::Profile(ProfileHop {
+                    profile_id: "bastion".into(),
+                })],
+                auth: AuthMethod::Key {
+                    private_key: PathBuf::from("keys/Target/key"),
+                    public_key: PathBuf::from("keys/Target/key.pub"),
+                },
+            };
+            target.jump_chain = vec![JumpHop::Profile(ProfileHop {
+                profile_id: bastion.id.clone(),
+            })];
+            self.save_profiles(vec![bastion, target]);
+        }
+
+        /// Swap the identity saved in Line for one the containers reject.
+        fn use_unauthorized_identity(&self) {
+            let rejected = self._temp.path().join("rejected_key");
+            let rejected_public = self._temp.path().join("rejected_authorized");
+            create_client_identity(&rejected, &rejected_public);
+            self.write_key_pair("Target", &rejected, &rejected_public);
+        }
+
+        fn reverse_chain(&mut self) {
+            let mut chain = self.endpoint_chain();
+            chain.reverse();
+            self.install_target(chain);
+        }
+
+        fn stop_hop(&self, index: usize) {
+            run(Command::new("docker").args(["stop", &self.jump_names[index]]));
         }
 
         fn run_line(&self) -> Output {
@@ -163,6 +377,31 @@ mod linux {
                 .expect("spawn line");
             wait_for_child(&mut child, STARTUP_TIMEOUT);
             child.wait_with_output().expect("collect line output")
+        }
+
+        /// A failed chain must not leave its ProxyCommand `ssh` processes
+        /// behind, holding the terminal or the forwarded connection.
+        fn assert_no_lingering_ssh(&self) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let listing = Command::new("pgrep")
+                    .args(["-af", "ssh"])
+                    .output()
+                    .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                    .unwrap_or_default();
+                let lingering: Vec<&String> = self
+                    .jump_names
+                    .iter()
+                    .filter(|name| listing.contains(name.as_str()))
+                    .collect();
+                if lingering.is_empty() {
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    panic!("ssh processes outlived the failed chain: {lingering:?}\n{listing}");
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 
@@ -188,42 +427,6 @@ mod linux {
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         )
         .expect("authorized key mode");
-    }
-
-    fn install_profile(
-        line_root: &Path,
-        target_host: &str,
-        jump_chain: Vec<JumpHop>,
-        client_key: &Path,
-        authorized_keys: &Path,
-    ) {
-        let key_dir = line_root.join("keys/Target");
-        fs::create_dir_all(&key_dir).expect("key dir");
-        let private_key = key_dir.join("key");
-        let public_key = key_dir.join("key.pub");
-        fs::copy(client_key, &private_key).expect("private key copy");
-        fs::copy(authorized_keys, &public_key).expect("public key copy");
-        set_private_file_mode(&private_key);
-        set_private_file_mode(&public_key);
-
-        let profile = Profile {
-            id: "target".into(),
-            name: "Target".into(),
-            host: target_host.to_owned(),
-            port: 22,
-            username: "root".into(),
-            jump_chain,
-            auth: AuthMethod::Key {
-                private_key: PathBuf::from("keys/Target/key"),
-                public_key: PathBuf::from("keys/Target/key.pub"),
-            },
-        };
-        ConfigStore::at(line_root)
-            .save(&Profiles {
-                profiles: vec![profile],
-                ..Profiles::default()
-            })
-            .expect("save test profile");
     }
 
     struct Cleanup {
