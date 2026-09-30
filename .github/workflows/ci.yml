@@ -69,8 +69,20 @@ jobs:
         run: cargo audit
 
   package:
-    name: Linux Package Smoke Test
-    runs-on: ubuntu-latest
+    name: Package Smoke Test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            deb_arch: arm64
+            rpm_arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,7 +90,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
@@ -91,20 +103,29 @@ jobs:
           cargo install cargo-generate-rpm --locked
 
       - name: Build static release binary
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test the binary
+        run: |
+          BIN="target/${{ matrix.target }}/release/line"
+          "$BIN" --version
 
       - name: Build and inspect packages
         run: |
           set -euo pipefail
           rm -rf package-smoke
           mkdir -p package-smoke
-          cargo deb --no-build --target x86_64-unknown-linux-musl -o package-smoke
-          cargo generate-rpm --target x86_64-unknown-linux-musl -o package-smoke
+          cargo deb --no-build --target ${{ matrix.target }} -o package-smoke
+          cargo generate-rpm --target ${{ matrix.target }} -o package-smoke
 
           DEB="$(find package-smoke -maxdepth 1 -name '*.deb' -print -quit)"
           RPM="$(find package-smoke -maxdepth 1 -name '*.rpm' -print -quit)"
           test -n "$DEB"
           test -n "$RPM"
+
+          # Package metadata must describe the architecture we actually built.
+          test "$(dpkg-deb -f "$DEB" Architecture)" = "${{ matrix.deb_arch }}"
+          test "$(rpm -qp --queryformat '%{ARCH}' "$RPM")" = "${{ matrix.rpm_arch }}"
 
           dpkg-deb -f "$DEB" Depends | grep -q 'openssh-client'
           rpm -qpR "$RPM" | grep -q '^openssh-clients$'
@@ -116,3 +137,11 @@ jobs:
             echo "static package unexpectedly depends on a GLIBC symbol version" >&2
             exit 1
           fi
+
+      - name: Install the Debian package and run it
+        run: |
+          set -euo pipefail
+          DEB="$(find package-smoke -maxdepth 1 -name '*.deb' -print -quit)"
+          sudo dpkg -i "$DEB"
+          line --version
+          sudo dpkg -r line

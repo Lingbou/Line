@@ -28,19 +28,30 @@ Line 是一个轻量化的 Linux 终端 SSH 管理工具，用 Rust 编写。在
 
 ### 预编译安装包（.deb 与 .rpm）
 
-从 [Releases](https://github.com/Lingbou/Line/releases) 页面下载对应发行版的最新安装包：
+从 [Releases](https://github.com/Lingbou/Line/releases) 页面下载对应发行版和 CPU 架构的最新安装包：
 
 ```bash
+# 先确认自己的架构：amd64/x86_64 还是 arm64/aarch64
+dpkg --print-architecture   # Debian/Ubuntu
+uname -m                    # RPM 系发行版
+
 # Ubuntu / Debian
-sudo apt install ./line_<version>_amd64.deb
+sudo apt install ./line_<version>_amd64.deb    # x86_64
+sudo apt install ./line_<version>_arm64.deb    # aarch64
 
 # Fedora / RHEL / CentOS
-sudo dnf install ./line-<version>-1.x86_64.rpm
+sudo dnf install ./line-<version>-1.x86_64.rpm  # x86_64
+sudo dnf install ./line-<version>-1.aarch64.rpm # aarch64
 ```
 
 ### 免安装静态二进制（全 Linux 通用）
 
-从 [Releases](https://github.com/Lingbou/Line/releases) 下载 `line-v<version>-x86_64-unknown-linux-musl.tar.gz`，解压后将 `line` 放到 `~/.local/bin/` 或 `/usr/local/bin/` 即可直接运行。
+从 [Releases](https://github.com/Lingbou/Line/releases) 下载对应架构的压缩包：
+
+- `line-v<version>-x86_64-unknown-linux-musl.tar.gz`（Intel/AMD）
+- `line-v<version>-aarch64-unknown-linux-musl.tar.gz`（ARM64，如树莓派、ARM 服务器）
+
+解压后将 `line` 放到 `~/.local/bin/` 或 `/usr/local/bin/` 即可直接运行。
 
 二进制本身是静态链接的，但 Line 仍然依赖系统安装的 OpenSSH 客户端和 `ssh-keygen`。
 

@@ -28,19 +28,30 @@ Line is a lightweight Linux TUI for quickly opening SSH connections without repe
 
 ### Pre-built Packages (.deb & .rpm)
 
-Download the latest release package matching your distribution from [Releases](https://github.com/Lingbou/Line/releases):
+Download the latest release package matching your distribution and CPU architecture from [Releases](https://github.com/Lingbou/Line/releases):
 
 ```bash
+# Check which architecture you are on: amd64/x86_64 or arm64/aarch64
+dpkg --print-architecture   # Debian/Ubuntu
+uname -m                    # RPM-based distributions
+
 # Ubuntu / Debian
-sudo apt install ./line_<version>_amd64.deb
+sudo apt install ./line_<version>_amd64.deb    # x86_64
+sudo apt install ./line_<version>_arm64.deb    # aarch64
 
 # Fedora / RHEL / CentOS
-sudo dnf install ./line-<version>-1.x86_64.rpm
+sudo dnf install ./line-<version>-1.x86_64.rpm  # x86_64
+sudo dnf install ./line-<version>-1.aarch64.rpm # aarch64
 ```
 
 ### Static Binary (Any Linux Distro)
 
-Download `line-v<version>-x86_64-unknown-linux-musl.tar.gz` from [Releases](https://github.com/Lingbou/Line/releases), extract it, and move `line` to `/usr/local/bin/` or `~/.local/bin/`.
+Download the tarball for your architecture from [Releases](https://github.com/Lingbou/Line/releases):
+
+- `line-v<version>-x86_64-unknown-linux-musl.tar.gz` (Intel/AMD)
+- `line-v<version>-aarch64-unknown-linux-musl.tar.gz` (ARM64, e.g. Raspberry Pi, ARM servers)
+
+Extract it and move `line` to `/usr/local/bin/` or `~/.local/bin/`.
 
 The binary itself is static, but Line still invokes the system OpenSSH client and `ssh-keygen`.
 
